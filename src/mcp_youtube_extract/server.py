@@ -16,6 +16,7 @@ from mcp.server import MCPServer
 from .youtube import get_video_info, get_video_transcript, format_video_info
 from .comments_api import (
     DEFAULT_MAX_COMMENTS,
+    fetch_comment_count,
     format_comments_page,
     format_paid_comments,
     get_comments_page,
@@ -36,11 +37,29 @@ app = MCPServer(
 
 
 @app.tool(
-    description="Fetch YouTube video information (title, channel, date, views, description) and its transcript.",
+    description=(
+        "Fetch YouTube video information (title, channel, date, views, "
+        "description, comment count) and optionally its transcript. Pass "
+        "include_transcript=false for a cheap metadata-only lookup, e.g. to "
+        "read the comment count before deciding whether to fetch comments. "
+        "The comment count is YouTube's reported figure: it covers top-level "
+        "comments plus replies and is truncated to two significant figures, "
+        "so treat it as approximate."
+    ),
 )
-def get_yt_video_info(video_id: str) -> str:
-    """Fetch video metadata and transcript for a YouTube video ID."""
-    logger.info(f"MCP tool called: get_yt_video_info with video_id: {video_id}")
+def get_yt_video_info(video_id: str, include_transcript: bool = True) -> str:
+    """
+    Fetch video metadata, and the transcript unless it is opted out of.
+
+    Args:
+        video_id: The YouTube video ID.
+        include_transcript: Set False to skip the transcript, which is the
+                            bulk of the response on long videos.
+    """
+    logger.info(
+        f"MCP tool called: get_yt_video_info with video_id: {video_id}, "
+        f"include_transcript={include_transcript}"
+    )
 
     # yt-info-extract needs no API key; the key remains an optional fallback.
     api_key = os.getenv("YOUTUBE_API_KEY", "")
@@ -50,7 +69,19 @@ def get_yt_video_info(video_id: str) -> str:
         video_info = get_video_info(api_key, video_id)
         result.append("=== VIDEO INFORMATION ===")
         result.append(format_video_info(video_info))
+
+        # yt_info_extract drops comment_count, so source it directly.
+        count = fetch_comment_count(video_id)
+        result.append(
+            f"Comments: ~{count:,} (approximate; includes replies)"
+            if isinstance(count, int)
+            else "Comments: N/A"
+        )
         result.append("")
+
+        if not include_transcript:
+            logger.info(f"Skipping transcript for {video_id} on request")
+            return "\n".join(result).rstrip()
 
         transcript = get_video_transcript(video_id)
         result.append("=== TRANSCRIPT ===")
@@ -82,8 +113,9 @@ def get_yt_video_info(video_id: str) -> str:
         "Fetch one page of nested YouTube comments, with replies grouped under "
         "their parent thread. Returns explicit has_more / next_cursor paging "
         "state so callers can loop until has_more is false. Super Thanks "
-        "comments are marked with their paid amount. Reports scan truncation "
-        "when the fetch cap hid additional comments."
+        "comments are marked with their paid amount. Output states how many "
+        "comments were scanned against the video's reported total, and warns "
+        "when max_comments truncated the scan."
     ),
 )
 def get_yt_video_comments(
@@ -123,7 +155,10 @@ def get_yt_video_comments(
     description=(
         "Fetch only Super Thanks (paid) comments for a video, highest amount "
         "first. Amounts are rendered by YouTube and may be multi-currency. "
-        "Paid comments cluster in the 'top' sort order."
+        "Paid comments cluster in the 'top' sort order. Output states how many "
+        "comments were scanned against the video's reported total, and warns "
+        "when max_comments truncated the scan — a truncated scan will "
+        "under-report the number of Super Thanks."
     ),
 )
 def get_yt_paid_comments(

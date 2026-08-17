@@ -29,7 +29,12 @@ logger = get_logger(__name__)
 
 # Paid comments cluster in "top"; a "new" sort surfaces almost none.
 DEFAULT_SORT = "top"
-DEFAULT_MAX_COMMENTS = 300
+
+# 300 silently under-reported on real videos (a 2435-comment video yielded 35
+# paid comments at 300 but 301 at 3000). Default high enough to cover most
+# videos; callers scanning very large ones should raise it and check the
+# truncation warning in the output.
+DEFAULT_MAX_COMMENTS = 5000
 
 _CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache" / "comments"
 
@@ -39,6 +44,47 @@ _UG_TOKEN = re.compile(r"Ug[A-Za-z0-9_-]+")
 
 def _cache_path(video_id: str, sort: str, max_comments: int) -> Path:
     return _CACHE_DIR / f"{video_id}.{sort}.{max_comments}.json"
+
+
+def fetch_comment_count(video_id: str) -> int | None:
+    """
+    YouTube's reported comment count, without fetching any comment text.
+
+    One metadata request with getcomments off. The value counts top-level
+    comments plus replies, and YouTube truncates it to two significant figures
+    (a real 1,265 is reported as 1,200), so treat it as approximate. It is
+    reliable for detecting that a walk fell short, not for certifying that one
+    was complete.
+
+    Returns None if the field is unavailable.
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.sanitize_info(ydl.extract_info(url, download=False))
+        count = info.get("comment_count")
+        logger.info(f"Reported comment_count for {video_id}: {count}")
+        return count
+    except Exception as e:
+        logger.warning(f"Could not fetch comment count for {video_id}: {e}")
+        return None
+
+
+def _truncation_note(scanned: int, reported: int | None) -> str:
+    """
+    One line describing scan coverage, so a count is never mistaken for total.
+
+    `reported` is approximate, so only a clear shortfall is called truncation.
+    """
+    if reported is None:
+        return f"Scanned {scanned:,} comments (video total unknown)."
+    if scanned < reported:
+        return (
+            f"Scanned {scanned:,} of ~{reported:,} comments — TRUNCATED. "
+            f"Raise max_comments to cover the rest."
+        )
+    return f"Scanned {scanned:,} comments (~{reported:,} reported; full coverage)."
 
 
 def _comment_id_from_surface_key(key: str) -> str | None:
@@ -200,7 +246,8 @@ def get_comments_page(
     Paging is over top-level threads; replies ride along with their parent.
     `has_more` is computed, never guessed, so callers can loop until it is False.
     """
-    threads = nest_comments(fetch_comments(video_id, sort, max_comments))
+    comments = fetch_comments(video_id, sort, max_comments)
+    threads = nest_comments(comments)
     page = threads[offset : offset + limit]
     next_offset = offset + len(page)
 
@@ -212,6 +259,9 @@ def get_comments_page(
         "total_threads": len(threads),
         "has_more": next_offset < len(threads),
         "next_cursor": next_offset if next_offset < len(threads) else None,
+        # Coverage of the underlying scan, distinct from paging over threads.
+        "scanned": len(comments),
+        "reported_total": fetch_comment_count(video_id),
     }
 
 
@@ -240,6 +290,7 @@ def get_paid_comments(
         "video_id": video_id,
         "paid_count": len(paid),
         "scanned": len(comments),
+        "reported_total": fetch_comment_count(video_id),
         "comments": paid,
     }
 
@@ -272,24 +323,27 @@ def format_comments_page(page: dict) -> str:
         if page.get("has_more")
         else "final page"
     )
+    coverage = _truncation_note(page.get("scanned", 0), page.get("reported_total"))
     return (
         f"Showing threads {page['offset']}-{page['offset'] + page['returned'] - 1} "
-        f"of {page['total_threads']}\n\n{body}\n\n"
+        f"of {page['total_threads']} top-level threads\n"
+        f"{coverage}\n\n{body}\n\n"
         f"has_more={page['has_more']}, {tail}"
     )
 
 
 def format_paid_comments(result: dict) -> str:
     """Render Super Thanks results as text."""
+    coverage = _truncation_note(result.get("scanned", 0), result.get("reported_total"))
+
     if not result.get("comments"):
         return (
-            f"No Super Thanks found for video {result.get('video_id')} "
-            f"(scanned {result.get('scanned', 0)} comments)."
+            f"No Super Thanks found for video {result.get('video_id')}.\n{coverage}"
         )
 
     lines = [
-        f"Found {result['paid_count']} Super Thanks "
-        f"in {result['scanned']} scanned comments:",
+        f"Found {result['paid_count']} Super Thanks.",
+        coverage,
         "",
     ]
     for comment in result["comments"]:

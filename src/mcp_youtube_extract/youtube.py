@@ -6,6 +6,7 @@ from .google_api import get_video_info, format_video_info
 from .transcript_api import get_video_transcript
 from .comments_api import (
     fetch_comments,
+    fetch_comment_count,
     nest_comments,
     get_comments_page,
     get_paid_comments,
@@ -17,6 +18,7 @@ __all__ = [
     'get_video_transcript',
     'format_video_info',
     'fetch_comments',
+    'fetch_comment_count',
     'nest_comments',
     'get_comments_page',
     'get_paid_comments',

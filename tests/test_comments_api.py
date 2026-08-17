@@ -24,6 +24,7 @@ _mod = importlib.util.module_from_spec(_spec)
 sys.modules["mcp_youtube_extract.comments_api"] = _mod
 _spec.loader.exec_module(_mod)
 
+_truncation_note = _mod._truncation_note
 _amount_sort_key = _mod._amount_sort_key
 _collect_paid_amounts = _mod._collect_paid_amounts
 _comment_id_from_surface_key = _mod._comment_id_from_surface_key
@@ -115,6 +116,27 @@ class TestAmountSortKey:
     def test_unpaid_sorts_last(self):
         assert _amount_sort_key(None) == 0.0
         assert _amount_sort_key("") == 0.0
+
+
+class TestTruncationNote:
+    def test_warns_when_scan_fell_short(self):
+        note = _truncation_note(1087, 1200)
+        assert "TRUNCATED" in note
+        assert "1,087" in note and "1,200" in note
+        assert "max_comments" in note
+
+    def test_no_warning_at_full_coverage(self):
+        note = _truncation_note(2435, 2400)
+        assert "TRUNCATED" not in note
+        assert "full coverage" in note
+
+    def test_handles_unknown_total(self):
+        note = _truncation_note(500, None)
+        assert "TRUNCATED" not in note
+        assert "unknown" in note
+
+    def test_equal_counts_are_not_truncated(self):
+        assert "TRUNCATED" not in _truncation_note(300, 300)
 
 
 class TestFormatting:
