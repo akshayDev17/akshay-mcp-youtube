@@ -20,6 +20,9 @@ htmlcov/
 logs/
 *.log
 
+# Cached comment fetches
+.cache/
+
 # Environment variables
 .env
 

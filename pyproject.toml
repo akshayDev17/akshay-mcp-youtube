@@ -9,9 +9,10 @@ description = "A Model Context Protocol (MCP) server for YouTube operations"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "mcp>=1.6.0",
+    "mcp>=2.0.0",
     "yt-ts-extract>=1.0.0",
     "yt-info-extract",
+    "yt-dlp>=2025.1.1",
 ]
 
 [project.scripts]
@@ -23,7 +24,7 @@ packages = ["src/mcp_youtube_extract"]
 [dependency-groups]
 dev = [
     "hatch>=1.14.1",
-    "mcp[cli]>=1.6.0",
+    "mcp[cli]>=2.0.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=6.2.1",
