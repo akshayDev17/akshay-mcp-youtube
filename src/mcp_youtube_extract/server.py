@@ -17,10 +17,15 @@ from .youtube import get_video_info, get_video_transcript, format_video_info
 from .comments_api import (
     DEFAULT_MAX_COMMENTS,
     fetch_comment_count,
+    fetch_top_level_paid_exhaustive,
     format_comments_page,
     format_paid_comments,
     get_comments_page,
     get_paid_comments,
+)
+from .super_thanks import (
+    format_super_thanks_summary,
+    summarize_super_thanks,
 )
 from .logger import get_logger
 
@@ -182,6 +187,51 @@ def get_yt_paid_comments(
     except Exception as e:
         logger.error(f"Error fetching paid comments for {video_id}: {e}", exc_info=True)
         return f"Error fetching paid comments for {video_id}: {e}"
+
+
+@app.tool(
+    description=(
+        "Aggregate Super Thanks across an entire video: paid vs free comment "
+        "counts, per-currency donation totals, and an INR grand total. Performs "
+        "an exhaustive top-level scan (Super Thanks are always top-level per "
+        "YouTube policy, so replies are skipped for speed). First call on a "
+        "video is slow but the walk is cached; subsequent calls are instant. "
+        "FX rates come from frankfurter.dev (ECB, no key); currencies outside "
+        "ECB coverage stay in the per-currency breakdown but are excluded from "
+        "the INR grand total, with a note."
+    ),
+)
+def get_yt_super_thanks_summary(video_id: str, sort: str = "top") -> str:
+    """
+    Return the Super Thanks summary for a video.
+
+    Args:
+        video_id: The YouTube video ID.
+        sort: Comment sort order ("top" or "new"). Super Thanks cluster in "top";
+              "new" surfaces very few and can miss most donations.
+    """
+    logger.info(f"MCP tool called: get_yt_super_thanks_summary with video_id: {video_id}")
+    try:
+        comments = fetch_top_level_paid_exhaustive(video_id, sort=sort)
+        result = summarize_super_thanks(comments)
+        # `comment_count` from YouTube covers top-level + replies, not comparable
+        # to a top-level-only scan. State our coverage in its own terms.
+        total_with_replies = fetch_comment_count(video_id)
+        replies_note = (
+            f" (video also has ~{total_with_replies:,} comments+replies total, "
+            f"but replies cannot be Super Thanks and are skipped.)"
+            if isinstance(total_with_replies, int) else ""
+        )
+        coverage = (
+            f"Exhaustively scanned {result['scanned']:,} top-level comments."
+            f"{replies_note}"
+        )
+        return format_super_thanks_summary(result, video_id, coverage)
+    except Exception as e:
+        logger.error(
+            f"Error summarizing Super Thanks for {video_id}: {e}", exc_info=True
+        )
+        return f"Error summarizing Super Thanks for {video_id}: {e}"
 
 
 def main():

@@ -128,8 +128,17 @@ def _collect_paid_amounts(responses: list) -> dict[str, str]:
     return amounts
 
 
-def _fetch_raw(video_id: str, sort: str, max_comments: int) -> tuple[list[dict], dict[str, str]]:
-    """Fetch comments via yt-dlp while capturing raw responses for paid amounts."""
+def _fetch_raw(
+    video_id: str,
+    sort: str,
+    max_comments: int,
+    replies_per_thread: str = "10",
+) -> tuple[list[dict], dict[str, str]]:
+    """Fetch comments via yt-dlp while capturing raw responses for paid amounts.
+
+    replies_per_thread="0" skips replies entirely (right choice for Super Thanks,
+    which YouTube only allows on top-level comments).
+    """
     responses: list = []
     original = YoutubeIE._extract_response
 
@@ -148,7 +157,9 @@ def _fetch_raw(video_id: str, sort: str, max_comments: int) -> tuple[list[dict],
             "youtube": {
                 "comment_sort": [sort],
                 # total, parent-limit, top-level, replies-per-thread
-                "max_comments": [str(max_comments), "all", str(max_comments), "10"],
+                "max_comments": [
+                    str(max_comments), "all", str(max_comments), replies_per_thread,
+                ],
             }
         },
     }
@@ -205,6 +216,55 @@ def fetch_comments(
 
     comments, amounts = _fetch_raw(video_id, sort, max_comments)
     merged = _merge_paid(comments, amounts)
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(merged))
+    except Exception as e:
+        logger.warning(f"Could not write cache {path}: {e}")
+
+    return merged
+
+
+# Cap high enough to cover the largest YouTube video in practice. yt-dlp stops
+# on its own when the source is exhausted; this is only an upper bound.
+_EXHAUSTIVE_CAP = 10_000_000
+
+
+def fetch_top_level_paid_exhaustive(
+    video_id: str,
+    sort: str = DEFAULT_SORT,
+    refresh: bool = False,
+) -> list[dict]:
+    """
+    Walk EVERY top-level comment of a video (no replies) and return them with
+    paid_amount merged. Cached under a distinct key from get_comments_page's
+    partial scans.
+
+    Super Thanks are always top-level (YouTube UI enforces this), so skipping
+    replies is both correct and much faster on videos with long reply threads.
+    """
+    path = _CACHE_DIR / f"{video_id}.{sort}.top-level-exhaustive.json"
+
+    if not refresh and path.exists():
+        try:
+            cached = json.loads(path.read_text())
+            logger.info(
+                f"Cache hit (top-level exhaustive) for {video_id} "
+                f"({len(cached)} comments)"
+            )
+            return cached
+        except Exception as e:
+            logger.warning(f"Ignoring unreadable cache {path}: {e}")
+
+    comments, amounts = _fetch_raw(
+        video_id, sort, _EXHAUSTIVE_CAP, replies_per_thread="0"
+    )
+    # Belt-and-braces: the extractor should return only top-level with "0" replies,
+    # but filter defensively so downstream summaries never mistake a reply for a
+    # top-level thread.
+    top_level = [c for c in comments if c.get("parent") in (None, "root")]
+    merged = _merge_paid(top_level, amounts)
 
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
