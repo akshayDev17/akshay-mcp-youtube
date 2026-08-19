@@ -3,7 +3,7 @@ yt-info-extract utilities for fetching YouTube video information.
 """
 
 from yt_info_extract import get_video_info as yt_get_video_info
-from .logger import get_logger
+from ..logger import get_logger
 
 logger = get_logger(__name__)
 

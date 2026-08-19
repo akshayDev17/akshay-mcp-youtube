@@ -8,7 +8,7 @@ from yt_ts_extract import (
     get_available_languages,
     YouTubeTranscriptExtractor,
 )
-from .logger import get_logger
+from ..logger import get_logger
 
 logger = get_logger(__name__)
 
