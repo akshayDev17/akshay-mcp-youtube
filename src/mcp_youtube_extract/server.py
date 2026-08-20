@@ -17,6 +17,7 @@ from .tools.video_comments import tool as _video_comments_tool  # noqa: F401
 from .tools.paid_comments import tool as _paid_comments_tool  # noqa: F401
 from .tools.super_thanks_summary import tool as _super_thanks_summary_tool  # noqa: F401
 from .tools.playlist_info import tool as _playlist_info_tool  # noqa: F401
+from .tools.video_search import tool as _video_search_tool  # noqa: F401
 
 logger = get_logger(__name__)
 
