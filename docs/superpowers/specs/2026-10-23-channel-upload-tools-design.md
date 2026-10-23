@@ -58,8 +58,12 @@ backend using the official API replaces it behind the same tools.
 - Per-video scheduling in batches, arbitrary times.
 - The explainer-video plugin will additionally write `title.txt` and a PNG/JPG thumbnail
   into each video folder (the owner is making that change).
-- Login is LinkedIn-style: the first call that needs a session opens the login window
-  itself; no "Authenticate" button.
+- Login is handled by the server end to end: it opens the sign-in window itself, detects
+  when sign-in completes, closes the window itself and continues the upload. The only
+  human step is typing the Google credentials (and 2FA) into that window. No
+  "Authenticate" button, and never "do X and retry" instructions for the user.
+- Every upload, single or batch, runs as a server-side job, so a client-side tool-call
+  timeout never interrupts an upload or a login.
 - The channel is verified (uploads over 15 minutes and custom thumbnails are allowed).
 
 ## Tools
@@ -70,7 +74,14 @@ errors returned as a string rather than raised.
 
 ### `upload_yt_video`
 
-Uploads one video and returns when it is done (or failed).
+Starts a one-video job and waits for it. If the job finishes within the wait, returns its
+outcome. If not — or if the client cuts the call off — the job keeps running in the
+server, and the result says so with its job id for `get_yt_upload_status`. Client-side
+cancellation of the tool call must not cancel the job.
+
+Claude Code's MCP tool-call time limit is not reliably documented (reports range from
+~60 s in the desktop app to unbounded in the CLI), so nothing may depend on a long call
+surviving. The wait defaults to 10 minutes and is configurable (`YT_UPLOAD_CALL_WAIT`).
 
 | Parameter | Type | Default | Meaning |
 |---|---|---|---|
@@ -121,21 +132,23 @@ Starts a batch upload in the background and returns a job id immediately.
 
 - `videos`: ordered list; each entry accepts exactly the parameters of `upload_yt_video`.
 - `defaults`: fills only fields an entry leaves out. Any parameter may appear here.
-- Every entry is validated before anything is uploaded; if any entry is invalid, the
-  whole call is rejected with every problem listed, and nothing is uploaded.
-- The session is checked before the job starts. If not logged in, the login window is
-  opened and the call returns "login pending" without starting a job.
-- Videos upload one at a time, in list order. A failed video is recorded and skipped.
-  `publish_at` is re-checked just before each entry uploads, since a long batch can push
+- Every entry is validated up front. An invalid entry is marked `failed` with every
+  problem it has, and skipped; the valid entries upload. The call's immediate response
+  already lists the entries that failed validation.
+- Videos upload one at a time, in list order. A failed video is recorded and skipped; the
+  rest carry on, and every non-`done` entry is reported at the end.
+- `publish_at` is re-checked just before each entry uploads, since a long batch can push
   a near time into the past; that entry then fails instead of publishing at once.
-- If the session ends mid-batch, the remaining entries fail as "not logged in" and the
-  login window is opened once.
+- If there is no session at the start, or it ends mid-batch, the job runs the login flow
+  (see Session and login), pausing while it waits, then continues where it left off.
 - `resume_job_id`: given alone (no `videos` or `defaults`), re-runs that job's stored
   entries, retrying only `failed` and `interrupted` ones that have no video id.
 
 ### `get_yt_upload_status`
 
-Takes a job id. Reports per video: `waiting`, `uploading`, `done` (with links),
+Takes a job id (from either upload tool). Reports the job's state — including
+`waiting for sign-in` while the login window is open — and per video: `waiting`,
+`uploading`, `done` (with links),
 `needs_attention` (links and what did not apply), `failed` (reason and failure-evidence
 paths), or `interrupted` (the server stopped mid-job; includes the video id if Studio had
 already created it). Ends with totals and, once finished, every non-`done` entry.
@@ -181,19 +194,35 @@ the unsupported-browser notice if shown, then:
 - lands on `studio.youtube.com/channel/<id>/…` and `<id>` equals the configured channel →
   proceed;
 - lands on another channel id → refuse: "profile is signed in to <other>, expected <id>";
-- lands on `accounts.google.com` → not logged in → start login.
+- lands on `accounts.google.com` → not logged in → run the login flow, then continue.
 
-**Login.** Launch Brave as a plain subprocess — not under Playwright — with
-`--user-data-dir=<profile>` at YouTube's sign-in page continuing to Studio upload. Google
-refuses sign-in inside automated browsers, so this window must not be automated. The tool
-returns at once: "A Brave window has opened. Sign in with the channel's Google account,
-confirm Studio shows the channel, then close that window and retry." While that window
-is open the profile is locked; any call in that state returns "login window still open —
-finish signing in and close it" instead of failing. (Detect via Chromium's
-`SingletonLock` in the profile, or the process list.)
+**Login flow** — the server does everything except type the credentials:
 
-**CLI.** `mcp_youtube_extract --login` does the same from a terminal and waits until the
-window is closed and the session check passes.
+1. Launch Brave as a plain subprocess — **not** under Playwright — with
+   `--user-data-dir=<profile>` at YouTube's sign-in page, continuing to Studio upload.
+   Google refuses sign-in inside automated browsers, so this window must not be
+   automated. Headless is impossible here: a person has to type into it.
+2. Tell the caller once, as a progress message / job state (`waiting for sign-in`), that a
+   Brave window has opened for signing in to the channel's Google account. That sentence
+   is for Claude to relay; it asks nothing else of the person.
+3. Watch for completion without touching the window: poll the profile's cookie database
+   read-only (`Default/Cookies`, opened `mode=ro&immutable=1`) for fresh YouTube login
+   cookies (`LOGIN_INFO` on `.youtube.com`, plus `SAPISID`). Names and timestamps only —
+   values are never read.
+4. On completion, wait a few seconds for Brave to flush, then terminate the Brave
+   process the server launched (graceful first). The person does not close anything.
+5. Run the session check. Right channel → continue the job. Wrong channel → reopen the
+   sign-in window with the message that the expected channel is `<id>` (e.g. a Brand
+   Account channel needs switching to); this repeats until it matches or times out.
+6. Bounded by `YT_UPLOAD_LOGIN_TIMEOUT` (default 10 minutes). On expiry the window is
+   closed and the affected entries fail with "sign-in not completed".
+
+Only one login flow runs at a time; a second job needing it waits on the first. If the
+person closes the window themselves before signing in, that counts as cancelling the
+sign-in: affected entries fail with that reason.
+
+**CLI.** `mcp_youtube_extract --login` runs the same flow from a terminal, for anyone who
+prefers to sign in ahead of time. It is optional; nothing requires it.
 
 ## Backend: Studio upload dialog (now)
 
@@ -243,14 +272,17 @@ Environment variables, set in the MCP server's `env` (as `YOUTUBE_API_KEY` alrea
 | `YT_UPLOAD_PROFILE_DIR` | `~/.mcp-youtube-extract/profile` | |
 | `YT_UPLOAD_BROWSER` | `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser` | must be the browser that created the profile |
 | `YT_UPLOAD_HEADLESS` | `true` | `false` shows the window, for debugging |
+| `YT_UPLOAD_LOGIN_TIMEOUT` | `600` (seconds) | how long a job waits for sign-in |
+| `YT_UPLOAD_CALL_WAIT` | `600` (seconds) | how long `upload_yt_video` waits before handing back a job id |
 
 ## Concurrency and lifecycle
 
 - One browser on the profile at a time: uploads are serialized by a process-wide lock.
   A `upload_yt_video` call while a batch is running waits its turn (or returns "busy"
   — builder's call, but it must not fail obscurely).
-- The batch runs in a background thread of the server process. Job state is written to
-  `~/.mcp-youtube-extract/jobs/<job_id>.json` after every change, so status survives.
+- Every job (single or batch) runs in a background thread of the server process. Job
+  state is written to `~/.mcp-youtube-extract/jobs/<job_id>.json` after every change, so
+  status survives.
 - This is a stdio server: Claude Code owns its process. If the session ends, a running
   batch stops. On next start, jobs left `uploading` are marked `interrupted`;
   `resume_job_id` finishes them without re-uploading done entries.
@@ -295,14 +327,18 @@ uploads.
 
 ## Calls made by the designer (not discussed with the owner)
 
-Defaults (`private`, `en`, made-for-kids `false`); the three-outcome result
-(done / needs attention / failed); validating a whole batch before starting; checking the
-session before starting a batch; read-back verification after upload; the profile, job and
-failure-evidence locations under `~/.mcp-youtube-extract/`; configuration by environment
-variable; the login tool call returning at once rather than waiting inline; thumbnail file
-names `thumbnail.png` / `thumbnail.jpg`.
+Approved by the owner: defaults (`private`, `en`, made-for-kids `false`); read-back
+verification after upload; everything under `~/.mcp-youtube-extract/`; configuration by
+environment variable.
+
+Not yet reviewed: the three-outcome result (done / needs attention / failed); every
+upload running as a job; detecting sign-in from the cookie database's login-cookie
+names; the 10-minute login and call-wait defaults; thumbnail file names `thumbnail.png`
+/ `thumbnail.jpg`.
 
 ## Left to the builder
 
-Studio selectors for the unproven steps; how busy calls behave during a batch; how the
-login window's closing is detected; exact result wording.
+Studio selectors for the unproven steps; how busy calls behave during a batch; whether
+`LOGIN_INFO` + `SAPISID` appearing is a reliable "sign-in done" signal (verify against a
+real sign-in; fall back to a headless session check after closing the window if not);
+exact result wording.
