@@ -28,8 +28,11 @@ backend using the official API replaces it behind the same tools.
   accepting explicit files for videos made elsewhere (e.g. Shorts).
 - In a batch, every video carries its own settings, including its own arbitrary
   publish time. There is no interval or pattern.
-- Login happens once, in a browser window, and persists. It is re-requested only when
-  YouTube ends the session.
+- Several independent channels at once (any number), each addressed by a short name.
+  The channel is chosen only by the call naming it, or else the configured default —
+  never inferred from the video (shape, length, title).
+- Login happens once per channel, in a browser window, and persists. It is re-requested
+  only when YouTube ends that channel's session.
 - Same tool inputs regardless of backend, so swapping to the official API later does not
   change how the tools are called.
 
@@ -39,11 +42,10 @@ backend using the official API replaces it behind the same tools.
 - An HTTP transport or Claude Code's "Authenticate" button — the server stays stdio.
 - Generating any content: titles, descriptions, captions and thumbnails arrive finished.
 - Playlists, tags, category, end screens, cards, editing or deleting existing videos.
-- More than one channel.
 
 ## Anti-goals (failure even if it "works")
 
-- Uploading to any channel other than the configured one.
+- Uploading to any channel other than the one the call named (or the default).
 - Making a video more public than asked: an explicit `visibility` or `publish_at` is
   always honoured exactly, and read back to confirm.
 - Silently changing what was asked (e.g. rounding a publish time, dropping a caption
@@ -69,6 +71,8 @@ backend using the official API replaces it behind the same tools.
 - The channel is verified (uploads over 15 minutes and custom thumbnails are allowed).
 - Default visibility is **public**: publishing is the point of the tool. Each tool's
   description must state this default plainly, since the callers are other agents.
+- Multiple channels, maintained side by side; the caller names the channel, with a
+  configured default. No routing by video type.
 - Works with any MCP client, not only Claude Code: nothing may rely on Claude-specific
   behaviour (the job + status design already covers clients that cut long calls short).
 
@@ -91,6 +95,7 @@ surviving. The wait defaults to 10 minutes and is configurable (`YT_UPLOAD_CALL_
 
 | Parameter | Type | Default | Meaning |
 |---|---|---|---|
+| `channel` | str | `YT_UPLOAD_DEFAULT_CHANNEL` | A configured channel name (e.g. `main`), or its channel id |
 | `folder` | str | — | A per-video folder; files below are found in it by convention |
 | `video_path` | str | from `folder` | The video file |
 | `title` | str | from `folder` | Title text |
@@ -136,8 +141,10 @@ Starts a batch upload in the background and returns a job id immediately.
 }
 ```
 
-- `videos`: ordered list; each entry accepts exactly the parameters of `upload_yt_video`.
+- `videos`: ordered list; each entry accepts exactly the parameters of `upload_yt_video`,
+  `channel` included, so one batch may span several channels.
 - `defaults`: fills only fields an entry leaves out. Any parameter may appear here.
+- An unknown `channel` is a validation failure for that entry.
 - Every entry is validated up front. An invalid entry is marked `failed` with every
   problem it has, and skipped; the valid entries upload. The call's immediate response
   already lists the entries that failed validation.
@@ -189,15 +196,18 @@ folders are always listed explicitly by the caller; the tool does not scan a par
 
 ## Session and login
 
-**Profile.** A dedicated Brave user-data directory, default
-`~/.mcp-youtube-extract/profile`, created with mode 700. Cookies never leave it. The spike's
-logged-in profile at `~/yt-spike/profile` can be moved there to avoid a re-login.
+**Profiles.** One dedicated Brave user-data directory per configured channel, at
+`~/.mcp-youtube-extract/profiles/<name>`, created with mode 700. Cookies never leave it.
+One profile per channel works whether channels belong to different Google accounts or
+are Brand Account channels under one account: each profile remembers its own channel, so
+nothing ever has to switch channels inside a profile. The spike's logged-in profile at
+`~/yt-spike/profile` can be moved to `profiles/main` to avoid a re-login.
 
-**Session check** (first step of every upload, and of each batch entry): open the profile
-headless, go to `https://youtube.com/upload`, click Studio's "Skip to YouTube Studio" on
-the unsupported-browser notice if shown, then:
+**Session check** (first step of every upload, and of each batch entry), on the target
+channel's profile: open it headless, go to `https://youtube.com/upload`, click Studio's
+"Skip to YouTube Studio" on the unsupported-browser notice if shown, then:
 
-- lands on `studio.youtube.com/channel/<id>/…` and `<id>` equals the configured channel →
+- lands on `studio.youtube.com/channel/<id>/…` and `<id>` equals the target channel's id →
   proceed;
 - lands on another channel id → refuse: "profile is signed in to <other>, expected <id>";
 - lands on `accounts.google.com` → not logged in → run the login flow, then continue.
@@ -223,12 +233,14 @@ the unsupported-browser notice if shown, then:
 6. Bounded by `YT_UPLOAD_LOGIN_TIMEOUT` (default 10 minutes). On expiry the window is
    closed and the affected entries fail with "sign-in not completed".
 
-Only one login flow runs at a time; a second job needing it waits on the first. If the
+The login flow is per channel: the window opens on that channel's profile, and the
+relayed sentence names the channel. Only one login flow runs at a time per channel; a
+second job needing the same channel waits on the first. If the
 person closes the window themselves before signing in, that counts as cancelling the
 sign-in: affected entries fail with that reason.
 
-**CLI.** `mcp_youtube_extract --login` runs the same flow from a terminal, for anyone who
-prefers to sign in ahead of time. It is optional; nothing requires it.
+**CLI.** `mcp_youtube_extract --login <name>` runs the same flow from a terminal, for
+anyone who prefers to sign in ahead of time. It is optional; nothing requires it.
 
 ## Backend: Studio upload dialog (now)
 
@@ -274,8 +286,8 @@ Environment variables, set in the MCP server's `env` (as `YOUTUBE_API_KEY` alrea
 
 | Variable | Default | Notes |
 |---|---|---|
-| `YT_UPLOAD_CHANNEL_ID` | none — upload tools refuse to run without it | `UCDzx6hNPpuha4fCwYA5WAyg` |
-| `YT_UPLOAD_PROFILE_DIR` | `~/.mcp-youtube-extract/profile` | |
+| `YT_UPLOAD_CHANNELS` | none — upload tools refuse to run without it | `name=channel_id` pairs, comma-separated, e.g. `main=UCDzx6hNPpuha4fCwYA5WAyg,second=UC…`; each name's profile is `~/.mcp-youtube-extract/profiles/<name>` |
+| `YT_UPLOAD_DEFAULT_CHANNEL` | the first name listed | used when a call names no channel |
 | `YT_UPLOAD_BROWSER` | `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser` | must be the browser that created the profile |
 | `YT_UPLOAD_HEADLESS` | `true` | `false` shows the window, for debugging |
 | `YT_UPLOAD_LOGIN_TIMEOUT` | `600` (seconds) | how long a job waits for sign-in |
@@ -283,9 +295,9 @@ Environment variables, set in the MCP server's `env` (as `YOUTUBE_API_KEY` alrea
 
 ## Concurrency and lifecycle
 
-- One browser on the profile at a time: uploads are serialized by a process-wide lock.
-  A `upload_yt_video` call while a batch is running waits its turn (or returns "busy"
-  — builder's call, but it must not fail obscurely).
+- One browser per profile at a time: uploads to the same channel are serialized by a
+  per-channel lock; uploads to different channels may run concurrently. A call for a
+  channel that is busy queues behind the running work — it must not fail obscurely.
 - Every job (single or batch) runs in a background thread of the server process. Job
   state is written to `~/.mcp-youtube-extract/jobs/<job_id>.json` after every change, so
   status survives.
@@ -302,7 +314,8 @@ src/mcp_youtube_extract/
   tools/upload_status/tool.py     get_yt_upload_status
   shared/upload/spec.py           UploadSpec, folder resolution, defaults merge, validation
   shared/upload/backend.py        backend protocol + selection
-  shared/upload/session.py        profile, session check, login launch, lock detection
+  shared/upload/channels.py       parse YT_UPLOAD_CHANNELS, resolve name/id, profile paths
+  shared/upload/session.py        per-channel profile, session check, login flow, locks
   shared/upload/studio.py         Studio dialog steps (Playwright)
   shared/upload/jobs.py           batch runner, persisted job state, resume
 server.py                          register the three tools; `--login` flag in main()
