@@ -6,7 +6,9 @@ tools/*/tool.py without circular-import risk. Importing each tool module here
 runs its @app.tool() decorator, registering the tool.
 """
 
+import argparse
 import asyncio
+import sys
 
 from ._app import app
 from .shared.logger import get_logger
@@ -18,12 +20,41 @@ from .tools.paid_comments import tool as _paid_comments_tool  # noqa: F401
 from .tools.super_thanks_summary import tool as _super_thanks_summary_tool  # noqa: F401
 from .tools.playlist_info import tool as _playlist_info_tool  # noqa: F401
 from .tools.video_search import tool as _video_search_tool  # noqa: F401
+from .tools.video_upload import tool as _video_upload_tool  # noqa: F401
+from .tools.series_upload import tool as _series_upload_tool  # noqa: F401
+from .tools.upload_status import tool as _upload_status_tool  # noqa: F401
 
 logger = get_logger(__name__)
 
 
-def main():
-    """Main entry point for the MCP server."""
+def run_cli_login(name: str) -> int:
+    """Sign a channel's profile in from a terminal; 0 on success, 1 otherwise."""
+    from .shared.upload.config import ConfigError
+    from .shared.upload.service import get_config
+    from .shared.upload.session import ensure_session
+
+    try:
+        config = get_config()
+        channel = config.resolve_channel(name)
+    except ConfigError as e:
+        print(f"Cannot sign in: {e}")
+        return 1
+    reason = ensure_session(channel, config, lambda state, message: print(message or state))
+    if reason:
+        print(f"Not signed in: {reason}")
+        return 1
+    print(f"Signed in: '{channel.name}' reaches its own YouTube Studio ({channel.channel_id}).")
+    return 0
+
+
+def main(argv: list[str] | None = None):
+    """Main entry point for the MCP server; `--login NAME` signs a channel in and exits."""
+    parser = argparse.ArgumentParser(prog="mcp_youtube_extract")
+    parser.add_argument("--login", metavar="NAME", help="sign in the named upload channel's browser profile, then exit")
+    args = parser.parse_args(argv)
+    if args.login:
+        sys.exit(run_cli_login(args.login))
+
     logger.info("Starting YouTube MCP Server")
     try:
         asyncio.run(app.run_stdio_async())
