@@ -8,8 +8,9 @@ The owner publishes long-form explainer videos (and sometimes Shorts) to one You
 channel they maintain. The videos are produced by the `explainer-video-from-coursework`
 plugin (`~/github/explainer-video`), which already writes each finished video into its
 own folder with a description (chapters included) and English captions. Uploading them
-by hand in YouTube Studio is the remaining manual step. The goal is to let Claude upload
-one video, or a whole batch, through this MCP server.
+by hand in YouTube Studio is the remaining manual step. The goal is to let an AI
+harness — Claude Code, dsh, Codex, Antigravity, whichever produced the video — upload
+one video, or a whole batch, through this MCP server and have it go live.
 
 The official route — YouTube Data API v3 with OAuth — is blocked for now: the owner's
 GCP project (created 2026-10-06) has not passed YouTube's API compliance audit, and until
@@ -43,7 +44,8 @@ backend using the official API replaces it behind the same tools.
 ## Anti-goals (failure even if it "works")
 
 - Uploading to any channel other than the configured one.
-- Making a video more public than asked: the default is private, always.
+- Making a video more public than asked: an explicit `visibility` or `publish_at` is
+  always honoured exactly, and read back to confirm.
 - Silently changing what was asked (e.g. rounding a publish time, dropping a caption
   track) and reporting success.
 - Copying cookies out of the browser profile, or importing cookies from another
@@ -65,6 +67,10 @@ backend using the official API replaces it behind the same tools.
 - Every upload, single or batch, runs as a server-side job, so a client-side tool-call
   timeout never interrupts an upload or a login.
 - The channel is verified (uploads over 15 minutes and custom thumbnails are allowed).
+- Default visibility is **public**: publishing is the point of the tool. Each tool's
+  description must state this default plainly, since the callers are other agents.
+- Works with any MCP client, not only Claude Code: nothing may rely on Claude-specific
+  behaviour (the job + status design already covers clients that cut long calls short).
 
 ## Tools
 
@@ -91,7 +97,7 @@ surviving. The wait defaults to 10 minutes and is configurable (`YT_UPLOAD_CALL_
 | `description` | str | from `folder` | Description text (not a path) |
 | `captions_path` | str | from `folder` | Caption file (SRT) |
 | `thumbnail_path` | str | from `folder` | PNG or JPG |
-| `visibility` | `private` / `unlisted` / `public` | `private` | Must be omitted when `publish_at` is set |
+| `visibility` | `private` / `unlisted` / `public` | `public` | Must be omitted when `publish_at` is set |
 | `publish_at` | str, ISO 8601 with UTC offset | none | Scheduled: private until this moment, then public |
 | `language` | str (BCP-47, e.g. `en`) | `en` | Language of title and description |
 | `audio_language` | str | = `language` | Spoken language of the video |
@@ -125,7 +131,7 @@ Starts a batch upload in the background and returns a job id immediately.
     { "folder": ".../03-instruction-layer",   "visibility": "unlisted" },
     { "folder": ".../04-memory-state" }
   ],
-  "defaults": { "language": "en", "made_for_kids": false, "visibility": "private" },
+  "defaults": { "language": "en", "made_for_kids": false, "visibility": "public" },
   "resume_job_id": null
 }
 ```
@@ -327,7 +333,7 @@ uploads.
 
 ## Calls made by the designer (not discussed with the owner)
 
-Approved by the owner: defaults (`private`, `en`, made-for-kids `false`); read-back
+Approved by the owner: defaults (`public`, `en`, made-for-kids `false`); read-back
 verification after upload; everything under `~/.mcp-youtube-extract/`; configuration by
 environment variable.
 
