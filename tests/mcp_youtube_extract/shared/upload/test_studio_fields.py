@@ -79,3 +79,18 @@ def test_daily_upload_limit_is_recognised():
     text = "Details ... Daily upload limit reached Upload more videos daily after a one-time verification or wait 24 hours. Verify"
     assert "daily upload limit" in upload_blocker(text).lower()
     assert upload_blocker("Details Title (required) Video link https://youtu.be/abcdefghijk") is None
+
+
+def test_studio_spaces_are_normalised():
+    from mcp_youtube_extract.shared.upload.studio import normalise_spaces
+
+    assert normalise_spaces("7:37 PM") == "7:37 PM"
+    assert normalise_spaces("Nov\xa022, 2026") == "Nov 22, 2026"
+
+
+def test_parse_schedule_accepts_studios_narrow_space():
+    from datetime import datetime, timezone
+    from mcp_youtube_extract.shared.upload.studio import _parse_schedule
+
+    parsed = _parse_schedule("Visibility\nScheduled\nNov 22, 2026, 7:37 PM")
+    assert parsed is not None and parsed.astimezone(timezone.utc).minute == 7

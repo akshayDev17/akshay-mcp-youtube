@@ -72,6 +72,11 @@ def studio_language_label(code: str) -> str:
         raise ValueError(f"language '{code}' has no known YouTube Studio name") from None
 
 
+def normalise_spaces(text: str) -> str:
+    """Studio writes times with a narrow no-break space ("7:37 PM"); compare as plain spaces."""
+    return text.replace(" ", " ").replace("\xa0", " ")
+
+
 def schedule_texts(publish_at: datetime) -> tuple[str, str]:
     """Picker values in the machine's local zone, with that zone's offset on the publish
     date itself (daylight saving included), not today's offset."""
@@ -139,7 +144,7 @@ _SCHEDULE_TEXT = re.compile(r"([A-Z][a-z]{2} \d{1,2}, \d{4}),? (\d{1,2}:\d{2} [A
 def _parse_schedule(text: str) -> datetime | None:
     """Studio's local schedule text as an aware time, using the local zone's rules for
     that date."""
-    match = _SCHEDULE_TEXT.search(text)
+    match = _SCHEDULE_TEXT.search(normalise_spaces(text))
     if not match:
         return None
     try:
@@ -362,19 +367,32 @@ class StudioBackend:
         date_text, time_text = schedule_texts(spec.publish_at)
         page.locator("#second-container-expand-button").click()  # "Schedule"
         page.locator("#datepicker-trigger").click()
-        date_input = page.locator("ytcp-date-picker input:visible, tp-yt-paper-dialog input:visible").first
-        date_input.fill(date_text)
-        date_input.press("Enter")
-        page.keyboard.press("Escape")
-        time_input = page.locator("ytcp-uploads-dialog input:visible").filter(
-            has_not=page.locator("[type='file']")
-        ).last
+        self._click_calendar_day(page, spec.publish_at.astimezone())
+        time_input = page.locator("#child-input tp-yt-paper-input input:visible").first
         time_input.fill(time_text)
         time_input.press("Enter")
-        shown_date = page.locator("#datepicker-trigger").inner_text().strip()
-        shown_time = time_input.input_value().strip()
+        shown_date = normalise_spaces(page.locator("#datepicker-trigger").inner_text()).strip()
+        shown_time = normalise_spaces(time_input.input_value()).strip()
         if (shown_date, shown_time) != (date_text, time_text):
             raise StepFailed(f"Studio shows {shown_date} {shown_time}, expected {date_text} {time_text}")
+
+    def _click_calendar_day(self, page, local: datetime) -> None:
+        """Studio's date picker commits a date only when a day is clicked. Its calendar is a
+        scrolling list that renders nearby months only, so scroll until the month appears."""
+        calendar = page.locator("ytcp-scrollable-calendar").first
+        calendar.wait_for(state="visible")
+        month = calendar.locator("div.calendar-month").filter(
+            has=page.locator(".calendar-month-label", has_text=re.compile(rf"^\s*{local.strftime('%b %Y')}\s*$", re.I))
+        )
+        day = month.locator("span.calendar-day", has_text=re.compile(rf"^\s*{local.day}\s*$")).first
+        for _ in range(40):
+            if day.count() and day.is_visible():
+                break
+            calendar.hover()
+            page.mouse.wheel(0, 250)
+            page.wait_for_timeout(250)
+        day.click()
+        page.wait_for_timeout(500)
 
     def _wait_uploaded(self, page, spec: UploadSpec) -> None:
         size_mb = spec.video_path.stat().st_size / 1_000_000
@@ -406,7 +424,14 @@ class StudioBackend:
             session.skip_unsupported_notice(page)
             title_box = page.locator("#title-textarea #textbox").first
             title_box.wait_for(state="visible")
-            visibility_text = page.locator("ytcp-video-metadata-visibility").first.inner_text()
+            block = page.locator("ytcp-video-metadata-visibility").first
+            # The block renders its value after the title; wait for a visibility word.
+            page.wait_for_function(
+                """(el) => /public|private|unlisted|scheduled/i.test(el.innerText.replace(/^\\s*Visibility/i, ''))""",
+                arg=block.element_handle(),
+                timeout=_STEP_TIMEOUT_MS,
+            )
+            visibility_text = block.inner_text()
             lowered = visibility_text.lower()
             visibility = next((v for v in ("scheduled", "unlisted", "private", "public") if v in lowered), None)
             observed = {
