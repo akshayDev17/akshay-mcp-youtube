@@ -440,6 +440,15 @@ class StudioBackend:
                 "publish_at": _parse_schedule(visibility_text),
                 "caption_languages": [],
             }
+            if visibility == "scheduled" and observed["publish_at"] is None:
+                # The edit page says only "Scheduled"; the date and time are in its
+                # visibility dialog. Read them and close it without saving.
+                block.click()
+                trigger = page.locator("#datepicker-trigger:visible").first
+                trigger.wait_for(state="visible")
+                time_text = page.locator("#child-input tp-yt-paper-input input:visible").first.input_value()
+                observed["publish_at"] = _parse_schedule(f"{trigger.inner_text().strip()}, {time_text}")
+                page.keyboard.press("Escape")
             if spec.captions_path is not None:
                 page.goto(f"https://studio.youtube.com/video/{self._video_id}/translations")
                 session.skip_unsupported_notice(page)
