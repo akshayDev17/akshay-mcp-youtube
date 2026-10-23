@@ -47,3 +47,39 @@ def test_live_private_short_upload(tmp_path):
     clip = make_clip(tmp_path, 1080, 1920, seconds=5)
     outcome = upload_live(tmp_path, video_path=clip, title="live test private short", visibility="private")
     assert outcome.status == "done" and outcome.is_short is True
+
+
+def make_thumbnail(tmp_path):
+    import subprocess
+
+    png = tmp_path / "thumbnail.png"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "testsrc=size=1280x720:rate=1", "-frames:v", "1", str(png)], check=True)
+    return png
+
+
+def test_live_private_full_fields(tmp_path):
+    clip = make_clip(tmp_path, 1280, 720, seconds=5)
+    srt = tmp_path / "captions.srt"
+    srt.write_text("1\n00:00:00,500 --> 00:00:04,000\nHello from the live test.\n")
+    outcome = upload_live(
+        tmp_path, video_path=clip, title="live test full fields", visibility="private",
+        description="Line one of the description.\n\n0:00 Start\n0:02 Middle\n",
+        captions_path=srt, thumbnail_path=make_thumbnail(tmp_path),
+    )
+    assert outcome.status == "done" and outcome.is_short is False
+
+
+def test_live_unlisted(tmp_path):
+    outcome = upload_live(tmp_path, video_path=make_clip(tmp_path, 1280, 720, seconds=3),
+                          title="live test unlisted", visibility="unlisted")
+    assert outcome.status == "done"
+
+
+def test_live_scheduled_odd_minute(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    when = (datetime.now(timezone.utc) + timedelta(days=30)).replace(minute=7, second=0, microsecond=0)
+    outcome = upload_live(tmp_path, video_path=make_clip(tmp_path, 1280, 720, seconds=3),
+                          title="live test scheduled", visibility=None, publish_at=when)
+    assert outcome.status == "done", outcome.problems

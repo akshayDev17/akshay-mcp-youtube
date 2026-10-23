@@ -33,6 +33,90 @@ def parse_video_link(href: str) -> tuple[str, bool]:
     return match.group(1), "/shorts/" in href
 
 
+# Studio's "Video language" dropdown lists languages by name; these are the names it shows.
+STUDIO_LANGUAGE_LABELS = {
+    "en": "English",
+    "en-US": "English (United States)",
+    "en-GB": "English (United Kingdom)",
+    "en-IN": "English (India)",
+    "en-AU": "English (Australia)",
+    "en-CA": "English (Canada)",
+    "en-IE": "English (Ireland)",
+    "hi": "Hindi",
+    "bn": "Bengali",
+    "mr": "Marathi",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "kn": "Kannada",
+    "ml": "Malayalam",
+    "gu": "Gujarati",
+    "pa": "Punjabi",
+    "ur": "Urdu",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "pt": "Portuguese",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "ar": "Arabic",
+    "ru": "Russian",
+}
+
+
+def studio_language_label(code: str) -> str:
+    try:
+        return STUDIO_LANGUAGE_LABELS[code]
+    except KeyError:
+        raise ValueError(f"language '{code}' has no known YouTube Studio name") from None
+
+
+def picker_values(publish_at: datetime, tz) -> tuple[str, str]:
+    """Date and time text as Studio's scheduler shows them, e.g. ("Nov 2, 2026", "6:00 PM")."""
+    local = publish_at.astimezone(tz)
+    hour = local.hour % 12 or 12
+    return (
+        f"{local.strftime('%b')} {local.day}, {local.year}",
+        f"{hour}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}",
+    )
+
+
+def precheck(spec: UploadSpec) -> list[str]:
+    """What Studio's upload dialog cannot do for this spec, found before anything uploads.
+
+    The dialog sets only the video's spoken language ("Video language"), and adds
+    captions in that same language; there is no separate title/description language.
+    """
+    problems = []
+    for name in ("language", "audio_language", "captions_language"):
+        try:
+            studio_language_label(getattr(spec, name))
+        except ValueError as error:
+            problems.append(f"{name}: {error}")
+    if spec.language != spec.audio_language:
+        problems.append(
+            f"title/description language '{spec.language}' differs from audio_language "
+            f"'{spec.audio_language}'; Studio's upload dialog sets only the spoken language"
+        )
+    if spec.captions_path is not None and spec.captions_language != spec.audio_language:
+        problems.append(
+            f"captions_language '{spec.captions_language}' differs from audio_language "
+            f"'{spec.audio_language}'; Studio adds captions in the video's spoken language"
+        )
+    return problems
+
+
+def upload_blocker(page_text: str) -> str | None:
+    """A reason Studio will not accept this upload at all, read from the dialog's text."""
+    if "daily upload limit reached" in page_text.lower():
+        return (
+            "YouTube's daily upload limit for this channel was reached; Studio offers a one-time "
+            "verification to raise it, otherwise wait 24 hours"
+        )
+    return None
+
+
 def _slug(step: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", step.lower()).strip("-")
 
@@ -74,10 +158,10 @@ class StudioBackend:
     def upload(self, spec: UploadSpec) -> UploadOutcome:
         from playwright.sync_api import sync_playwright
 
-        self._video_id: str | None = None
-        self._is_short: bool | None = None
-        self._watch_url: str | None = None
-        step = "open Studio"
+        problems = precheck(spec)
+        if problems:
+            return UploadOutcome(status="failed", problems=problems)
+
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
                 **session.persistent_context_args(spec.channel, self.config, headless=self.config.headless)
@@ -85,20 +169,29 @@ class StudioBackend:
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(_STEP_TIMEOUT_MS)
             try:
-                for step, run in self._steps(spec):
-                    logger.info(f"upload '{spec.title}': {step}")
-                    run(page)
-                step = "read back"
-                mismatches = self._read_back(context, spec)
-            except Exception as error:
-                evidence = save_evidence(page, self.config.failures_dir, step, self.now())
-                text = str(error).strip()
-                first_line = text.splitlines()[0] if text else type(error).__name__
-                outcome = failure_outcome(self._video_id, f"{step}: {first_line}", evidence)
-                self._fill_links(outcome)
-                return outcome
+                return self._run_steps(page, context, spec)
             finally:
                 context.close()
+
+    def _run_steps(self, page, context, spec: UploadSpec) -> UploadOutcome:
+        """Run every step; once Studio has a video id, a failure is 'needs attention'."""
+        self._video_id: str | None = None
+        self._is_short: bool | None = None
+        self._watch_url: str | None = None
+        step = "open Studio"
+        try:
+            for step, run in self._steps(spec):
+                logger.info(f"upload '{spec.title}': {step}")
+                run(page)
+            step = "read back"
+            mismatches = self._read_back(context, spec)
+        except Exception as error:
+            evidence = save_evidence(page, self.config.failures_dir, step, self.now())
+            text = str(error).strip()
+            first_line = text.splitlines()[0] if text else type(error).__name__
+            outcome = failure_outcome(self._video_id, f"{step}: {first_line}", evidence)
+            self._fill_links(outcome)
+            return outcome
         outcome = UploadOutcome(status="needs_attention" if mismatches else "done", problems=mismatches)
         self._fill_links(outcome)
         outcome.applied = self._applied(spec)
@@ -135,6 +228,7 @@ class StudioBackend:
             ("open upload dialog", lambda page: page.goto(session.STUDIO_UPLOAD_URL)),
             ("skip unsupported-browser notice", session.skip_unsupported_notice),
             ("choose video file", lambda page: page.locator("input[type='file']").first.set_input_files(str(spec.video_path))),
+            ("capture video id", self._capture_video_id),
             ("set title", lambda page: self._set_title(page, spec)),
             ("set description", lambda page: self._set_description(page, spec)),
             ("set thumbnail", lambda page: self._set_thumbnail(page, spec)),
@@ -152,6 +246,17 @@ class StudioBackend:
 
     # -- steps --------------------------------------------------------------------
 
+    def _capture_video_id(self, page) -> None:
+        """Studio creates the video as soon as the file is chosen; learn its id at once so a
+        later failure is reported against it rather than as 'nothing created'."""
+        link = page.locator("a[href*='youtu.be'], a[href*='/shorts/'], a[href*='watch?v=']").first
+        limit = page.get_by_text("Daily upload limit reached", exact=False).first
+        link.or_(limit).wait_for(state="visible")
+        blocker = upload_blocker(page.evaluate("document.body ? document.body.innerText : ''"))
+        if blocker and not link.is_visible():
+            raise StepFailed(blocker)
+        self._video_id, _ = parse_video_link(link.get_attribute("href"))
+
     def _set_title(self, page, spec: UploadSpec) -> None:
         box = page.locator("#title-textarea #textbox")
         box.click()
@@ -159,28 +264,72 @@ class StudioBackend:
         page.keyboard.type(spec.title)
 
     def _set_description(self, page, spec: UploadSpec) -> None:
-        if spec.description:
-            raise StepFailed("not implemented yet")
+        if not spec.description:
+            return
+        box = page.locator("#textbox[aria-label^='Tell viewers']")
+        box.click()
+        page.keyboard.press("Meta+A")
+        page.keyboard.type(spec.description)
 
     def _set_thumbnail(self, page, spec: UploadSpec) -> None:
         if spec.thumbnail_path is not None:
-            raise StepFailed("not implemented yet")
+            page.locator("input#file-loader").set_input_files(str(spec.thumbnail_path))
 
     def _set_made_for_kids(self, page, spec: UploadSpec) -> None:
         name = "VIDEO_MADE_FOR_KIDS_MFK" if spec.made_for_kids else "VIDEO_MADE_FOR_KIDS_NOT_MFK"
         page.locator(f"tp-yt-paper-radio-button[name='{name}']").click()
 
     def _set_languages(self, page, spec: UploadSpec) -> None:
-        return None
+        label = studio_language_label(spec.audio_language)
+        page.locator("#toggle-button").click()  # "Show more"
+        trigger = page.get_by_text("Video language", exact=False).first
+        option = page.locator("tp-yt-paper-item:visible").filter(
+            has_text=re.compile(rf"^\s*{re.escape(label)}\s*$")
+        ).first
+        # The list sometimes opens before it is filled; reopen it once if so.
+        for attempt in range(2):
+            trigger.scroll_into_view_if_needed()
+            trigger.click()
+            try:
+                option.wait_for(state="visible", timeout=10_000)
+                break
+            except Exception:
+                page.keyboard.press("Escape")
+                if attempt:
+                    raise
+        option.click()
 
     def _set_captions(self, page, spec: UploadSpec) -> None:
-        if spec.captions_path is not None:
-            raise StepFailed("not implemented yet")
+        if spec.captions_path is None:
+            return
+        page.locator("#subtitles-button").click()
+        page.locator("#choose-upload-file").click()
+        with page.expect_file_chooser() as chooser:
+            page.get_by_text("Continue", exact=True).first.click()  # "With timing" is preselected
+        chooser.value.set_files(str(spec.captions_path))
+        page.locator("#publish-button").click()
+        page.locator("#publish-button").wait_for(state="hidden")
 
     def _set_visibility(self, page, spec: UploadSpec) -> None:
-        if spec.publish_at is not None or spec.visibility != "private":
-            raise StepFailed("not implemented yet")
-        page.locator("tp-yt-paper-radio-button[name='PRIVATE']").click()
+        if spec.publish_at is None:
+            page.locator(f"tp-yt-paper-radio-button[name='{spec.visibility.upper()}']").click()
+            return
+        date_text, time_text = picker_values(spec.publish_at, datetime.now().astimezone().tzinfo)
+        page.locator("#second-container-expand-button").click()  # "Schedule"
+        page.locator("#datepicker-trigger").click()
+        date_input = page.locator("ytcp-date-picker input:visible, tp-yt-paper-dialog input:visible").first
+        date_input.fill(date_text)
+        date_input.press("Enter")
+        page.keyboard.press("Escape")
+        time_input = page.locator("ytcp-uploads-dialog input:visible").filter(
+            has_not=page.locator("[type='file']")
+        ).last
+        time_input.fill(time_text)
+        time_input.press("Enter")
+        shown_date = page.locator("#datepicker-trigger").inner_text().strip()
+        shown_time = time_input.input_value().strip()
+        if (shown_date, shown_time) != (date_text, time_text):
+            raise StepFailed(f"Studio shows {shown_date} {shown_time}, expected {date_text} {time_text}")
 
     def _wait_uploaded(self, page, spec: UploadSpec) -> None:
         size_mb = spec.video_path.stat().st_size / 1_000_000
