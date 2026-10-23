@@ -7,6 +7,7 @@ does not, because Google refuses sign-in inside automated browsers.
 
 import os
 import re
+import socket
 import sqlite3
 import subprocess
 import time
@@ -16,6 +17,7 @@ from typing import Literal
 
 from ..logger import get_logger
 from .config import Channel, UploadConfig
+from .procs import pid_alive
 
 logger = get_logger(__name__)
 
@@ -51,8 +53,18 @@ def ensure_profile_dir(channel: Channel) -> Path:
 
 
 def profile_in_use(profile_dir: Path) -> bool:
-    """Chromium keeps a SingletonLock symlink in the profile while a browser has it open."""
-    return os.path.lexists(Path(profile_dir) / "SingletonLock")
+    """Chromium keeps a SingletonLock symlink ("<host>-<pid>") in the profile while a browser
+    has it open. One left by a browser that died on this machine does not count."""
+    lock = Path(profile_dir) / "SingletonLock"
+    if not os.path.lexists(lock):
+        return False
+    try:
+        host, _, pid = os.readlink(lock).rpartition("-")
+    except OSError:
+        return True
+    if host == socket.gethostname() and pid.isdigit():
+        return pid_alive(int(pid))
+    return True
 
 
 def persistent_context_args(channel: Channel, config: UploadConfig, headless: bool) -> dict:

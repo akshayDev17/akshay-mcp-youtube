@@ -239,6 +239,8 @@ def validate_spec(spec: UploadSpec, now: datetime) -> list[str]:
     if spec.publish_at is not None:
         if spec.visibility is not None:
             problems.append("visibility must be omitted when publish_at is set (a scheduled video is public at that time)")
+        if spec.publish_at.second or spec.publish_at.microsecond:
+            problems.append("publish_at must be on a whole minute (Studio schedules to the minute)")
         late = check_publish_at(spec, now)
         if late:
             problems.append(late)

@@ -72,6 +72,12 @@ def studio_language_label(code: str) -> str:
         raise ValueError(f"language '{code}' has no known YouTube Studio name") from None
 
 
+def schedule_texts(publish_at: datetime) -> tuple[str, str]:
+    """Picker values in the machine's local zone, with that zone's offset on the publish
+    date itself (daylight saving included), not today's offset."""
+    return picker_values(publish_at, None)
+
+
 def picker_values(publish_at: datetime, tz) -> tuple[str, str]:
     """Date and time text as Studio's scheduler shows them, e.g. ("Nov 2, 2026", "6:00 PM")."""
     local = publish_at.astimezone(tz)
@@ -130,7 +136,9 @@ def compare_readback(spec: UploadSpec, observed: dict) -> list[str]:
 _SCHEDULE_TEXT = re.compile(r"([A-Z][a-z]{2} \d{1,2}, \d{4}),? (\d{1,2}:\d{2} [AP]M)")
 
 
-def _parse_schedule(text: str, tz) -> datetime | None:
+def _parse_schedule(text: str) -> datetime | None:
+    """Studio's local schedule text as an aware time, using the local zone's rules for
+    that date."""
     match = _SCHEDULE_TEXT.search(text)
     if not match:
         return None
@@ -138,7 +146,7 @@ def _parse_schedule(text: str, tz) -> datetime | None:
         local = datetime.strptime(f"{match.group(1)} {match.group(2)}", "%b %d, %Y %I:%M %p")
     except ValueError:
         return None
-    return local.replace(tzinfo=tz)
+    return local.astimezone()
 
 
 def upload_blocker(page_text: str) -> str | None:
@@ -189,9 +197,10 @@ class StudioBackend:
 
     # -- the upload -------------------------------------------------------------
 
-    def upload(self, spec: UploadSpec) -> UploadOutcome:
+    def upload(self, spec: UploadSpec, on_video_id: Callable[[str], None] | None = None) -> UploadOutcome:
         from playwright.sync_api import sync_playwright
 
+        self._on_video_id = on_video_id
         problems = precheck(spec)
         if problems:
             return UploadOutcome(status="failed", problems=problems)
@@ -290,6 +299,8 @@ class StudioBackend:
         if blocker and not link.is_visible():
             raise StepFailed(blocker)
         self._video_id, _ = parse_video_link(link.get_attribute("href"))
+        if getattr(self, "_on_video_id", None):
+            self._on_video_id(self._video_id)
 
     def _set_title(self, page, spec: UploadSpec) -> None:
         box = page.locator("#title-textarea #textbox")
@@ -348,7 +359,7 @@ class StudioBackend:
         if spec.publish_at is None:
             page.locator(f"tp-yt-paper-radio-button[name='{spec.visibility.upper()}']").click()
             return
-        date_text, time_text = picker_values(spec.publish_at, datetime.now().astimezone().tzinfo)
+        date_text, time_text = schedule_texts(spec.publish_at)
         page.locator("#second-container-expand-button").click()  # "Schedule"
         page.locator("#datepicker-trigger").click()
         date_input = page.locator("ytcp-date-picker input:visible, tp-yt-paper-dialog input:visible").first
@@ -401,7 +412,7 @@ class StudioBackend:
             observed = {
                 "title": title_box.inner_text().strip(),
                 "visibility": visibility,
-                "publish_at": _parse_schedule(visibility_text, datetime.now().astimezone().tzinfo),
+                "publish_at": _parse_schedule(visibility_text),
                 "caption_languages": [],
             }
             if spec.captions_path is not None:

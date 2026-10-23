@@ -56,19 +56,14 @@ def upload_yt_series(
             return f"Resumed upload job {job.job_id}.\n\n{format_status(job, now)}"
         if not videos:
             return "Nothing to upload: pass videos, a list of entries."
-        job = new_job("series", videos, defaults, now)
+        job = new_job("series", [v if isinstance(v, dict) else {} for v in videos], defaults, now)
         rejected = []
-        for entry in job.entries:
-            result = build_spec(entry.params, job.defaults, runner.config, now)
-            if result.spec is None:
-                entry.state, entry.problems = "failed", result.problems
-            elif duplicate := runner.find_duplicate(result.spec):
+        seen: dict[str, int] = {}
+        for entry, raw in zip(job.entries, videos):
+            entry.problems = _entry_problems(entry, raw, job.defaults, runner, now, seen)
+            if entry.problems:
                 entry.state = "failed"
-                entry.problems = [f"already in upload job {duplicate} (same file and channel within 24 hours)"]
-            else:
-                entry.file_key = JobRunner.file_key(result.spec)
-                continue
-            rejected.append(f"- Entry {entry.index + 1} failed validation: {'; '.join(entry.problems)}")
+                rejected.append(f"- Entry {entry.index + 1} failed validation: {'; '.join(entry.problems)}")
         runner.submit(job)
         waiting = sum(e.state == "waiting" for e in job.entries)
         lines = [
@@ -82,3 +77,25 @@ def upload_yt_series(
     except Exception as e:
         logger.error(f"Error in upload_yt_series: {e}", exc_info=True)
         return f"Error starting upload job: {e}"
+
+
+def _entry_problems(entry, raw, defaults, runner, now, seen: dict[str, int]) -> list[str]:
+    """Why this entry cannot upload, or [] (recording its file key); one bad entry never
+    stops the others."""
+    if not isinstance(raw, dict):
+        return ["entry must be an object with upload fields (folder, title, ...)"]
+    try:
+        result = build_spec(entry.params, defaults, runner.config, now)
+        if result.spec is None:
+            return result.problems
+        key = JobRunner.file_key(result.spec)
+    except Exception as e:
+        return [f"could not read this entry's files: {e}"]
+    marker = repr(key)
+    if marker in seen:
+        return [f"same video and channel as entry {seen[marker] + 1} in this batch"]
+    if duplicate := runner.find_duplicate(result.spec):
+        return [f"already in upload job {duplicate} (same file and channel within 24 hours)"]
+    seen[marker] = entry.index
+    entry.file_key = key
+    return []

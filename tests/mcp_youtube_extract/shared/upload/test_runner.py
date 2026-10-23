@@ -46,7 +46,7 @@ class FakeBackend:
             self.release.wait(5)
         return self.session_reasons.pop(0) if self.session_reasons else None
 
-    def upload(self, spec):
+    def upload(self, spec, on_video_id=None):
         self.titles.append(spec.title)
         if self.block_first and len(self.titles) == 1:
             self.started.set()
@@ -129,7 +129,7 @@ def test_gap_count_for_three_attempts(harness):
 def test_publish_at_rechecked_before_upload(harness):
     # Entry 2 is still in the future when its turn comes, but the gap pushes it past.
     h = harness(outcomes=["done", "done"], upload_takes={"minutes": 1})
-    params = h.entries(1) + h.entries(1, publish_at=NOW + timedelta(seconds=90))
+    params = h.entries(1) + h.entries(1, publish_at=NOW + timedelta(minutes=2))
     job = new_job("series", params, None, NOW)
     h.runner.submit(job)
     final = h.runner.wait(job.job_id, 5)

@@ -5,6 +5,7 @@ rest carry on. Between two consecutive upload attempts in a job the worker pause
 random 1-10 minutes. Every change is saved, so status survives the server stopping.
 """
 
+import fcntl
 import os
 import queue
 import random
@@ -57,6 +58,7 @@ class JobRunner:
 
     def submit(self, job: Job) -> None:
         job.state = "queued"
+        job.owner_pid = os.getpid()
         self._save(job)
         self._queue.put(job.job_id)
 
@@ -156,6 +158,34 @@ class JobRunner:
 
         job.state, job.pause_until = "running", None
         self._save(job)
+        with self._upload_lock(job):
+            return self._session_and_upload(job, entry, spec, on_state)
+
+    def _upload_lock(self, job: Job):
+        """An exclusive lock shared by every server process using this home, so uploads
+        stay one at a time even when several MCP clients each start their own server."""
+        runner = self
+
+        class _Lock:
+            def __enter__(self):
+                runner.store.jobs_dir.mkdir(parents=True, exist_ok=True)
+                self.handle = open(runner.store.jobs_dir / ".upload.lock", "a+")
+                try:
+                    fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    job.message = "waiting for another server process to finish its upload"
+                    runner._save(job)
+                    fcntl.flock(self.handle, fcntl.LOCK_EX)
+                    job.message = None
+                return self
+
+            def __exit__(self, *exc):
+                fcntl.flock(self.handle, fcntl.LOCK_UN)
+                self.handle.close()
+
+        return _Lock()
+
+    def _session_and_upload(self, job: Job, entry, spec: UploadSpec, on_state) -> bool:
         reason = self.backend.ensure_session(spec.channel, on_state)
         if reason:
             entry.state, entry.problems = "failed", [reason]
@@ -169,10 +199,16 @@ class JobRunner:
         job.state, job.message = "running", None
         entry.state = "uploading"
         self._save(job)
+        def on_video_id(video_id: str) -> None:
+            entry.video_id = video_id
+            self._save(job)
+
         try:
-            outcome = self.backend.upload(spec)
+            outcome = self.backend.upload(spec, on_video_id=on_video_id)
         except Exception as error:
             logger.error(f"upload of entry {entry.index} in job {job.job_id} raised", exc_info=True)
-            outcome = failure_outcome(None, f"internal error: {error}", [])
+            outcome = failure_outcome(entry.video_id, f"internal error: {error}", [])
+        if outcome.status == "failed" and entry.video_id:
+            outcome = failure_outcome(entry.video_id, "; ".join(outcome.problems), outcome.evidence)
         entry.apply(outcome)
         return True

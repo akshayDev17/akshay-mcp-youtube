@@ -8,7 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from ..logger import get_logger
 from .backend import UploadOutcome
+from .procs import pid_alive
+
+logger = get_logger(__name__)
 
 EntryState = Literal["waiting", "uploading", "done", "needs_attention", "failed", "interrupted"]
 JobState = Literal["queued", "running", "waiting_for_sign_in", "pausing", "finished", "interrupted"]
@@ -53,6 +57,7 @@ class Job:
     defaults: dict[str, Any]
     pause_until: datetime | None = None
     message: str | None = None
+    owner_pid: int | None = None
 
     @property
     def finished(self) -> bool:
@@ -107,7 +112,13 @@ class JobStore:
     def all(self) -> list[Job]:
         if not self.jobs_dir.is_dir():
             return []
-        return [self.load(p.stem) for p in sorted(self.jobs_dir.glob("*.json"))]
+        jobs = []
+        for path in sorted(self.jobs_dir.glob("*.json")):
+            try:
+                jobs.append(self.load(path.stem))
+            except Exception as error:
+                logger.warning(f"skipping unreadable upload job file {path.name}: {error}")
+        return jobs
 
     def recent(self, since: datetime) -> list[Job]:
         return [job for job in self.all() if job.created_at >= since]
@@ -118,6 +129,8 @@ class JobStore:
         for job in self.all():
             if job.state not in _UNFINISHED_JOB:
                 continue
+            if job.owner_pid is not None and pid_alive(job.owner_pid):
+                continue  # another server process is still running it
             for entry in job.entries:
                 if entry.state in ("waiting", "uploading"):
                     entry.state = "interrupted"

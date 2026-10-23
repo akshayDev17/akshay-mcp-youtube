@@ -23,7 +23,7 @@ class FakeBackend:
     def ensure_session(self, channel, on_state):
         return None
 
-    def upload(self, spec):
+    def upload(self, spec, on_video_id=None):
         self.uploaded.append(spec.title)
         if self.block_first and len(self.uploaded) == 1:
             self.release.wait(5)

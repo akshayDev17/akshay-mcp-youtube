@@ -40,4 +40,5 @@ class Backend(Protocol):
     def ensure_session(self, channel: Channel, on_state: Callable[[str, str | None], None]) -> str | None:
         """None when the channel's session is ready, else the reason it is not."""
 
-    def upload(self, spec: UploadSpec) -> UploadOutcome: ...
+    def upload(self, spec: UploadSpec, on_video_id: Callable[[str], None] | None = None) -> UploadOutcome:
+        """on_video_id is called as soon as the platform has created the video."""
