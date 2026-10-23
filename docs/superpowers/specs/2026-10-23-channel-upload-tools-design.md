@@ -73,6 +73,8 @@ backend using the official API replaces it behind the same tools.
   description must state this default plainly, since the callers are other agents.
 - Multiple channels, maintained side by side; the caller names the channel, with a
   configured default. No routing by video type.
+- No parallel uploads: one at a time server-wide; within a batch, a random 1–10 minute
+  gap between consecutive videos.
 - Works with any MCP client, not only Claude Code: nothing may rely on Claude-specific
   behaviour (the job + status design already covers clients that cut long calls short).
 
@@ -148,8 +150,13 @@ Starts a batch upload in the background and returns a job id immediately.
 - Every entry is validated up front. An invalid entry is marked `failed` with every
   problem it has, and skipped; the valid entries upload. The call's immediate response
   already lists the entries that failed validation.
-- Videos upload one at a time, in list order. A failed video is recorded and skipped; the
-  rest carry on, and every non-`done` entry is reported at the end.
+- Videos upload one at a time, in list order — never in parallel, even when entries
+  target different channels. A failed video is recorded and skipped; the rest carry on,
+  and every non-`done` entry is reported at the end.
+- Between two consecutive upload attempts in a batch, the job waits a random interval,
+  uniformly drawn from 1–10 minutes, fresh for each gap. No wait before the first
+  attempt or after the last; entries that failed validation are never attempted, so they
+  add no wait. Time spent waiting for sign-in does not count toward the gap.
 - `publish_at` is re-checked just before each entry uploads, since a long batch can push
   a near time into the past; that entry then fails instead of publishing at once.
 - If there is no session at the start, or it ends mid-batch, the job runs the login flow
@@ -160,7 +167,8 @@ Starts a batch upload in the background and returns a job id immediately.
 ### `get_yt_upload_status`
 
 Takes a job id (from either upload tool). Reports the job's state — including
-`waiting for sign-in` while the login window is open — and per video: `waiting`,
+`waiting for sign-in` while the login window is open, `queued` behind another job, and
+`pausing until HH:MM` during a gap between videos — and per video: `waiting`,
 `uploading`, `done` (with links),
 `needs_attention` (links and what did not apply), `failed` (reason and failure-evidence
 paths), or `interrupted` (the server stopped mid-job; includes the video id if Studio had
@@ -295,9 +303,9 @@ Environment variables, set in the MCP server's `env` (as `YOUTUBE_API_KEY` alrea
 
 ## Concurrency and lifecycle
 
-- One browser per profile at a time: uploads to the same channel are serialized by a
-  per-channel lock; uploads to different channels may run concurrently. A call for a
-  channel that is busy queues behind the running work — it must not fail obscurely.
+- No parallel uploads anywhere: the server runs one upload at a time across all channels
+  and all jobs. Jobs queue first-in, first-out; a job waiting its turn reports `queued`.
+  It must never fail obscurely because another job is running.
 - Every job (single or batch) runs in a background thread of the server process. Job
   state is written to `~/.mcp-youtube-extract/jobs/<job_id>.json` after every change, so
   status survives.
