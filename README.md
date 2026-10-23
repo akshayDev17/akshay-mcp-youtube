@@ -300,6 +300,71 @@ To use this MCP server with a client, add the following configuration to your cl
 }
 ```
 
+## Uploading to your channels
+
+Three tools upload videos to channels you own: `upload_yt_video` (one video),
+`upload_yt_series` (a batch, as a background job) and `get_yt_upload_status` (follow a
+job). They drive YouTube Studio's own upload dialog in a dedicated Brave profile per
+channel, logged in once. This is a bridge until the Google Cloud project passes YouTube's
+API audit; automating Studio is outside YouTube's terms, so the channel carries that risk
+until an official Data API backend replaces it.
+
+**Uploads are public by default.** Pass `visibility` (`private`, `unlisted`) or
+`publish_at` (ISO 8601 with a UTC offset) to change that.
+
+### Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `YT_UPLOAD_CHANNELS` | required | `name=channel_id` pairs, e.g. `main=UCDzx6hNPpuha4fCwYA5WAyg,second=UC…` |
+| `YT_UPLOAD_DEFAULT_CHANNEL` | first listed | channel used when a call names none |
+| `YT_UPLOAD_BROWSER` | `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser` | must be the browser that created the profiles |
+| `YT_UPLOAD_HEADLESS` | `true` | `false` shows the browser, for debugging |
+| `YT_UPLOAD_LOGIN_TIMEOUT` | `600` | seconds a job waits for you to sign in |
+| `YT_UPLOAD_CALL_WAIT` | `600` | seconds `upload_yt_video` waits before handing back a job id |
+
+```bash
+claude mcp add-json mcp_youtube_extract '{"command":"uv","args":["--directory","<repo>","run","mcp_youtube_extract"],"env":{"YT_UPLOAD_CHANNELS":"main=UCDzx6hNPpuha4fCwYA5WAyg"}}'
+```
+
+Everything lives under `~/.mcp-youtube-extract/`: `profiles/<name>/` (one Brave profile
+per channel, mode 700), `jobs/` (job state) and `failures/` (a screenshot and the page
+text for any failed step).
+
+### Signing in
+
+Nothing to do up front: the first upload to a channel that is not signed in opens a
+normal Brave window on that channel's profile. Sign in with the channel's Google account
+there; the server notices, closes the window and carries on. To sign in ahead of time:
+
+```bash
+uv run mcp_youtube_extract --login main
+```
+
+### Video folders
+
+`folder` takes the explainer-video pipeline's layout: exactly one `.mp4`, `title.txt`
+(first line), `description.md` (used verbatim, chapters included), `captions.srt` and
+`thumbnail.png` / `thumbnail.jpg`. Explicit parameters override the folder.
+
+Studio's upload dialog sets only the video's spoken language and adds captions in that
+language, so `language` and `captions_language` must match `audio_language`.
+
+### Jobs
+
+Uploads run one at a time across all channels. A batch pauses a random 1–10 minutes
+between uploads, skips entries that are invalid or fail, and reports them at the end.
+Each video ends `done`, `needs_attention` (it exists on the channel but something did not
+apply — never re-uploaded) or `failed` (nothing was created). Re-uploading the same file
+to the same channel within 24 hours is refused. If the server stops mid-job, the job is
+marked `interrupted`; `upload_yt_series(resume_job_id=…)` finishes it.
+
+### Live tests
+
+`tests/live/` uploads real private (or unlisted) test videos and prints each id to delete
+in Studio. They run only with `YT_UPLOAD_LIVE_TESTS=1` and the `YT_UPLOAD_*` variables set.
+YouTube caps daily uploads on channels without the one-time upload verification.
+
 ## Development
 
 ### Project Structure
