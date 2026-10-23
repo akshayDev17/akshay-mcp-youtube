@@ -193,3 +193,66 @@ def resolve_spec(
         made_for_kids=made_for_kids,
     )
     return SpecResult(spec, problems, warnings)
+
+
+TITLE_LIMIT = 100
+DESCRIPTION_LIMIT = 5000
+THUMBNAIL_LIMIT_BYTES = 2 * 1024 * 1024
+_THUMBNAIL_SUFFIXES = (".png", ".jpg", ".jpeg")
+
+
+def check_publish_at(spec: UploadSpec, now: datetime) -> str | None:
+    """The 'must be in the future' rule alone; re-run just before each upload."""
+    if spec.publish_at is not None and spec.publish_at <= now:
+        return f"publish_at {spec.publish_at.isoformat()} is now in the past"
+    return None
+
+
+def validate_spec(spec: UploadSpec, now: datetime) -> list[str]:
+    problems: list[str] = []
+    if not spec.title.strip():
+        problems.append("title is empty")
+    if len(spec.title) > TITLE_LIMIT:
+        problems.append(f"title is {len(spec.title)} characters; the limit is {TITLE_LIMIT}")
+    if "<" in spec.title or ">" in spec.title:
+        problems.append("title must not contain < or >")
+    if len(spec.description) > DESCRIPTION_LIMIT:
+        problems.append(f"description is {len(spec.description)} characters; the limit is {DESCRIPTION_LIMIT}")
+    if "<" in spec.description or ">" in spec.description:
+        problems.append("description must not contain < or >")
+
+    if not spec.video_path.is_file():
+        problems.append(f"video file not found: {spec.video_path}")
+    if spec.captions_path is not None:
+        if not spec.captions_path.is_file():
+            problems.append(f"captions file not found: {spec.captions_path}")
+        elif spec.captions_path.suffix.lower() != ".srt":
+            problems.append(f"captions must be an .srt file, not {spec.captions_path.name}")
+    if spec.thumbnail_path is not None:
+        if not spec.thumbnail_path.is_file():
+            problems.append(f"thumbnail file not found: {spec.thumbnail_path}")
+        elif spec.thumbnail_path.suffix.lower() not in _THUMBNAIL_SUFFIXES:
+            problems.append(f"thumbnail must be PNG or JPG, not {spec.thumbnail_path.name}")
+        elif spec.thumbnail_path.stat().st_size > THUMBNAIL_LIMIT_BYTES:
+            problems.append(f"thumbnail {spec.thumbnail_path.name} is larger than 2 MB")
+
+    if spec.publish_at is not None:
+        if spec.visibility is not None:
+            problems.append("visibility must be omitted when publish_at is set (a scheduled video is public at that time)")
+        late = check_publish_at(spec, now)
+        if late:
+            problems.append(late)
+    return problems
+
+
+def build_spec(
+    params: Mapping[str, Any], defaults: Mapping[str, Any] | None, config: UploadConfig, now: datetime
+) -> SpecResult:
+    """Resolve, then validate; spec is None if anything is wrong."""
+    result = resolve_spec(params, defaults, config)
+    if result.spec is None:
+        return result
+    problems = validate_spec(result.spec, now)
+    if problems:
+        return SpecResult(None, problems, result.warnings)
+    return result
