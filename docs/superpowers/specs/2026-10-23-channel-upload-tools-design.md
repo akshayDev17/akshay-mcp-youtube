@@ -52,7 +52,10 @@ backend using the official API replaces it behind the same tools.
   track) and reporting success.
 - Copying cookies out of the browser profile, or importing cookies from another
   browser. Tested: an exported Google session died within ~35 minutes.
-- Duplicate uploads when a batch is retried.
+- Duplicate uploads when a batch is retried, or when a caller whose call was cut off
+  calls again: an entry whose channel and video file (path, size, modification time)
+  match a non-failed entry from a job in the last 24 hours is refused, pointing at that
+  job.
 
 ## Decided with the owner
 
@@ -145,7 +148,9 @@ Starts a batch upload in the background and returns a job id immediately.
 
 - `videos`: ordered list; each entry accepts exactly the parameters of `upload_yt_video`,
   `channel` included, so one batch may span several channels.
-- `defaults`: fills only fields an entry leaves out. Any parameter may appear here.
+- `defaults`: fills only fields an entry leaves out. Any parameter may appear here. A
+  `visibility` from `defaults` (or the built-in `public`) never applies to an entry that
+  sets `publish_at`; only an entry's own `visibility` conflicts with its `publish_at`.
 - An unknown `channel` is a validation failure for that entry.
 - Every entry is validated up front. An invalid entry is marked `failed` with every
   problem it has, and skipped; the valid entries upload. The call's immediate response
