@@ -107,6 +107,40 @@ def precheck(spec: UploadSpec) -> list[str]:
     return problems
 
 
+def compare_readback(spec: UploadSpec, observed: dict) -> list[str]:
+    """One line per difference between the spec and what Studio shows after saving."""
+    lines = []
+    if observed.get("title") != spec.title:
+        lines.append(f"title is '{observed.get('title')}', expected '{spec.title}'")
+    if spec.publish_at is not None:
+        seen_at = observed.get("publish_at")
+        same_minute = seen_at is not None and seen_at.replace(second=0, microsecond=0) == spec.publish_at.replace(
+            second=0, microsecond=0
+        )
+        if observed.get("visibility") != "scheduled" or not same_minute:
+            seen = f"{observed.get('visibility')}" + (f" at {seen_at.isoformat()}" if seen_at else "")
+            lines.append(f"schedule is {seen}, expected public at {spec.publish_at.isoformat()}")
+    elif observed.get("visibility") != spec.visibility:
+        lines.append(f"visibility is {observed.get('visibility')}, expected {spec.visibility}")
+    if spec.captions_path is not None and spec.captions_language not in observed.get("caption_languages", []):
+        lines.append(f"caption track '{spec.captions_language}' is missing")
+    return lines
+
+
+_SCHEDULE_TEXT = re.compile(r"([A-Z][a-z]{2} \d{1,2}, \d{4}),? (\d{1,2}:\d{2} [AP]M)")
+
+
+def _parse_schedule(text: str, tz) -> datetime | None:
+    match = _SCHEDULE_TEXT.search(text)
+    if not match:
+        return None
+    try:
+        local = datetime.strptime(f"{match.group(1)} {match.group(2)}", "%b %d, %Y %I:%M %p")
+    except ValueError:
+        return None
+    return local.replace(tzinfo=tz)
+
+
 def upload_blocker(page_text: str) -> str | None:
     """A reason Studio will not accept this upload at all, read from the dialog's text."""
     if "daily upload limit reached" in page_text.lower():
@@ -353,4 +387,33 @@ class StudioBackend:
         page.wait_for_timeout(5000)
 
     def _read_back(self, context, spec: UploadSpec) -> list[str]:
-        return []
+        """Reopen the saved video in Studio and compare title, visibility or schedule, and captions."""
+        page = context.new_page()
+        page.set_default_timeout(_STEP_TIMEOUT_MS)
+        try:
+            page.goto(f"https://studio.youtube.com/video/{self._video_id}/edit")
+            session.skip_unsupported_notice(page)
+            title_box = page.locator("#title-textarea #textbox").first
+            title_box.wait_for(state="visible")
+            visibility_text = page.locator("ytcp-video-metadata-visibility").first.inner_text()
+            lowered = visibility_text.lower()
+            visibility = next((v for v in ("scheduled", "unlisted", "private", "public") if v in lowered), None)
+            observed = {
+                "title": title_box.inner_text().strip(),
+                "visibility": visibility,
+                "publish_at": _parse_schedule(visibility_text, datetime.now().astimezone().tzinfo),
+                "caption_languages": [],
+            }
+            if spec.captions_path is not None:
+                page.goto(f"https://studio.youtube.com/video/{self._video_id}/translations")
+                session.skip_unsupported_notice(page)
+                page.get_by_text("(video language)", exact=False).first.wait_for(state="visible", timeout=60_000)
+                labels = {label: code for code, label in STUDIO_LANGUAGE_LABELS.items()}
+                body = page.evaluate("document.body ? document.body.innerText : ''")
+                for line in body.splitlines():
+                    found = re.match(r"^\s*(.+?) \(video language\)\s*$", line)
+                    if found and found.group(1) in labels:
+                        observed["caption_languages"].append(labels[found.group(1)])
+            return compare_readback(spec, observed)
+        finally:
+            page.close()

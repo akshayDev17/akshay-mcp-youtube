@@ -83,3 +83,28 @@ def test_live_scheduled_odd_minute(tmp_path):
     outcome = upload_live(tmp_path, video_path=make_clip(tmp_path, 1280, 720, seconds=3),
                           title="live test scheduled", visibility=None, publish_at=when)
     assert outcome.status == "done", outcome.problems
+
+
+@pytest.mark.skipif(not os.environ.get("YT_UPLOAD_LIVE_VIDEO_ID"), reason="needs YT_UPLOAD_LIVE_VIDEO_ID of the full-fields test video")
+def test_live_readback_of_full_fields_video(tmp_path):
+    """Reads back an existing private video uploaded by test_live_private_full_fields (no upload)."""
+    from playwright.sync_api import sync_playwright
+
+    from mcp_youtube_extract.shared.upload import session
+    from mcp_youtube_extract.shared.upload.spec import UploadSpec
+    from mcp_youtube_extract.shared.upload.studio import StudioBackend
+
+    cfg = load_config()
+    srt = tmp_path / "captions.srt"; srt.write_text("1\n")
+    spec = UploadSpec(channel=cfg.resolve_channel(None), video_path=srt, title="live test full fields",
+                      visibility="private", captions_path=srt)
+    backend = StudioBackend(cfg)
+    backend._video_id = os.environ["YT_UPLOAD_LIVE_VIDEO_ID"]
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(**session.persistent_context_args(spec.channel, cfg, headless=True))
+        try:
+            assert backend._read_back(context, spec) == []
+            assert backend._read_back(context, UploadSpec(**{**spec.__dict__, "title": "wrong"})) == [
+                "title is 'live test full fields', expected 'wrong'"]
+        finally:
+            context.close()
