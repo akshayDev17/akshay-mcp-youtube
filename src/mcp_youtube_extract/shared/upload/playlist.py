@@ -37,10 +37,12 @@ class VideoFacts:
 
 @dataclass
 class PlaylistOutcome:
-    """done: created as asked. needs_attention: the playlist exists on the channel but
-    something did not apply. failed: nothing was created on the channel."""
+    """done: created as asked. needs_attention: something needs a person to look; when
+    created, the playlist exists on the channel but something did not apply, otherwise
+    nothing was created. failed: nothing was created on the channel."""
 
     status: OutcomeStatus
+    created: bool = False
     playlist_id: str | None = None
     applied: dict[str, str] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
@@ -70,8 +72,6 @@ def build_playlist_spec(params: dict[str, Any], config: UploadConfig) -> tuple[P
         problems.append(f"visibility '{visibility}' must be one of: {', '.join(PLAYLIST_VISIBILITIES)}")
 
     raw_ids = params.get("video_ids")
-    if isinstance(raw_ids, str):
-        raw_ids = [raw_ids]
     video_ids: list[str] = []
     if not raw_ids:
         problems.append("video_ids is required: ask the user which videos to add, in which order")
@@ -99,10 +99,17 @@ def build_playlist_spec(params: dict[str, Any], config: UploadConfig) -> tuple[P
     return PlaylistSpec(channel=channel, name=name, visibility=visibility, video_ids=tuple(video_ids)), []
 
 
-def preview_problems(spec: PlaylistSpec, facts: list[VideoFacts], existing_names: list[str]) -> list[str]:
-    """What would stop this playlist being created as asked, found from the preview reads."""
+def preview_problems(spec: PlaylistSpec, facts: list[VideoFacts], existing_names: list[str] | None) -> list[str]:
+    """What would stop this playlist being created as asked, found from the preview reads.
+    existing_names is None when the channel's playlists with similar names could not all be read."""
     problems = [f"video {i} ({f.video_id}): {f.problem}" for i, f in enumerate(facts, start=1) if f.problem]
-    if spec.name in existing_names:
+    if existing_names is None:
+        problems.append(
+            f"could not read every playlist Studio's Playlists picker lists for '{spec.name}', so the "
+            f"channel may already have a playlist with this name; nothing was created — check the "
+            f"channel's playlists in Studio, or try again"
+        )
+    elif spec.name in existing_names:
         problems.append(
             f"the channel already has a playlist named '{spec.name}'; choose another name "
             f"(videos are added by picking the playlist by name)"
@@ -164,7 +171,8 @@ def playlist_url(playlist_id: str) -> str:
 def format_outcome(spec: PlaylistSpec, outcome: PlaylistOutcome) -> str:
     headline = {
         "done": "Playlist created",
-        "needs_attention": "Playlist created, but needs attention",
+        "needs_attention": "Playlist created, but needs attention" if outcome.created
+        else "Playlist not created; needs attention",
         "failed": "Playlist not created",
     }[outcome.status]
     lines = [f"{headline} (status: {outcome.status})"]
@@ -179,7 +187,7 @@ def format_outcome(spec: PlaylistSpec, outcome: PlaylistOutcome) -> str:
     if outcome.evidence:
         lines.append("Evidence:")
         lines += [f"  {path}" for path in outcome.evidence]
-    if outcome.status == "needs_attention":
+    if outcome.status == "needs_attention" and outcome.created:
         lines.append(
             "The playlist exists on the channel; fix what is listed in YouTube Studio "
             "rather than creating it again."

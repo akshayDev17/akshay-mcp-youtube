@@ -89,11 +89,6 @@ def test_duplicates_are_refused(cfg):
     assert spec is None and "already at position 1" in problems[0]
 
 
-def test_single_string_is_one_video(cfg):
-    spec, _ = build(cfg, video_ids=A)
-    assert spec.video_ids == (A,)
-
-
 def test_channel_by_name_or_id_and_unknown(cfg):
     assert build(cfg, channel="second")[0].channel.channel_id == SECOND
     assert build(cfg, channel=SECOND)[0].channel.name == "second"
@@ -169,7 +164,21 @@ def test_outcome_text(cfg):
     spec, _ = build(cfg)
     done = format_outcome(spec, PlaylistOutcome("done", playlist_id="PLabcdefghij", applied={"name": "My list"}))
     assert "Playlist created (status: done)" in done and "list=PLabcdefghij" in done and "name: My list" in done
-    attention = format_outcome(spec, PlaylistOutcome("needs_attention", problems=["x"], evidence=["/tmp/e.png"]))
+    attention = format_outcome(
+        spec, PlaylistOutcome("needs_attention", created=True, problems=["x"], evidence=["/tmp/e.png"])
+    )
+    assert attention.startswith("Playlist created, but needs attention")
     assert "needs attention" in attention and "- x" in attention and "rather than creating it again" in attention
     failed = format_outcome(spec, PlaylistOutcome("failed", problems=["y"]))
     assert failed.startswith("Playlist not created (status: failed)")
+
+
+def test_unreadable_names_are_a_problem_that_creates_nothing(cfg):
+    spec, _ = build(cfg)
+    facts = facts_for(A, B, C)
+    problems = preview_problems(spec, facts, None)
+    assert len(problems) == 1 and "could not read every playlist" in problems[0]
+    assert "nothing was created" in problems[0]
+    not_created = format_outcome(spec, PlaylistOutcome("needs_attention", problems=problems))
+    assert not_created.startswith("Playlist not created; needs attention")
+    assert "rather than creating it again" not in not_created

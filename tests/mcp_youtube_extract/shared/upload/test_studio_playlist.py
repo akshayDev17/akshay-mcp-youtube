@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from mcp_youtube_extract.shared.upload import studio_playlist as sp
-from mcp_youtube_extract.shared.upload.playlist import VideoFacts, build_playlist_spec
+from mcp_youtube_extract.shared.upload.playlist import VideoFacts, build_playlist_spec, format_outcome
 
 A, B, C = "aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"
 
@@ -26,7 +26,7 @@ class Steps:
         self.order = list(spec.video_ids) if playlist_order is None else playlist_order
         facts = [VideoFacts(v, title=f"T{v[0]}", visibility="private") for v in spec.video_ids]
         fake = {
-            "read_videos": lambda page, s: (facts, list(existing)),
+            "read_videos": lambda page, s: (facts, None if existing is None else list(existing)),
             "open_edit_page": self.opener,
             "read_edit_page": lambda page: ("t", "private", "Private"),
             "open_picker": lambda page: self.step("picker") or "picker",
@@ -119,45 +119,136 @@ def test_unreadable_video_says_why_without_claiming_it_is_not_the_channels(monke
     assert facts.problem.endswith("(Timeout 30000ms exceeded.)")
 
 
-class FakePicker:
-    """Playlist names the picker shows on each read, before and after the search is typed."""
+# -- the Playlists picker, in a real browser -------------------------------------------
 
-    def __init__(self, before_search, after_search):
-        self.reads = {False: list(before_search), True: list(after_search)}
-        self.searched = None
+PICKER_HTML = """
+<div id="dialog">
+  <input id="search-input">
+  <div id="list" style="height:120px; overflow-y:auto; position:relative">
+    <div id="spacer" style="position:relative"></div>
+  </div>
+</div>
+<script>
+function start({playlists, loadMs, filterMs, ignoreSearch}) {
+  const ROW = 30, list = document.getElementById('list'), spacer = document.getElementById('spacer');
+  const checked = new Set();
+  let shown = [], range = '';
+  window.checkedNames = () => [...checked].map(i => playlists[i]);
+  function render(force) {
+    spacer.style.height = (shown.length * ROW) + 'px';
+    const first = Math.floor(list.scrollTop / ROW), last = Math.ceil((list.scrollTop + list.clientHeight) / ROW);
+    if (!force && range === `${first}-${last}`) return;
+    range = `${first}-${last}`;
+    spacer.innerHTML = '';
+    shown.slice(first, last).forEach((index, i) => {
+      const row = document.createElement('label');
+      row.style.cssText = `position:absolute; top:${(first + i) * ROW}px; height:${ROW}px; display:block`;
+      row.innerHTML = '<div role="checkbox"></div><span class="label-text"></span>';
+      row.querySelector('.label-text').textContent = playlists[index];
+      row.querySelector('[role=checkbox]').setAttribute('aria-checked', String(checked.has(index)));
+      row.querySelector('.label-text').onclick = () => {
+        checked.has(index) ? checked.delete(index) : checked.add(index);
+        render(true);
+      };
+      spacer.appendChild(row);
+    });
+  }
+  list.addEventListener('scroll', () => render(false));
+  document.getElementById('search-input').addEventListener('input', (event) => {
+    const query = event.target.value.toLowerCase();
+    setTimeout(() => {
+      if (!ignoreSearch) shown = playlists.map((_, i) => i).filter(i => playlists[i].toLowerCase().includes(query));
+      list.scrollTop = 0;
+      render(true);
+    }, filterMs);
+  });
+  setTimeout(() => { shown = playlists.map((_, i) => i); render(true); }, loadMs);
+}
+</script>
+"""
 
-    def evaluate(self, js, *args):
-        reads = self.reads[self.searched is not None]
-        return reads.pop(0) if len(reads) > 1 else reads[0]
-
-    def locator(self, selector):
-        picker = self
-
-        class SearchBox:
-            def fill(self, value):
-                picker.searched = value
-
-        return SearchBox()
+PYTHONS = [f"Python {n}" for n in range(1, 31)] + ["Python", "Other"]
 
 
-class FakePage:
-    def wait_for_timeout(self, ms):
-        pass
+@pytest.fixture(scope="module")
+def browser():
+    sync_api = pytest.importorskip("playwright.sync_api")
+    try:
+        with sync_api.sync_playwright() as p:
+            launched = p.chromium.launch(headless=True)
+            yield launched
+            launched.close()
+    except Exception as error:
+        pytest.skip(f"no headless Chromium: {error}")
 
 
-def test_search_waits_for_rows_then_for_a_settled_matching_result():
-    picker = FakePicker(
-        before_search=[[], [], ["Other", "Course", "Course 2"]],
-        after_search=[[], ["Other", "Course"], ["Other", "Course"], ["Course", "course  2"]],
-    )
-    assert sp.search_picker(FakePage(), picker, "Course") == ["Course", "course  2"]
-    assert picker.searched == "Course" and picker.reads[False] == [["Other", "Course", "Course 2"]]
+@pytest.fixture
+def open_picker_page(browser, monkeypatch):
+    monkeypatch.setattr(sp, "_POLL_MS", 50)
+    pages = []
+
+    def opener(playlists, load_ms=200, filter_ms=200, ignore_search=False):
+        page = browser.new_page()
+        pages.append(page)
+        page.set_content(PICKER_HTML)
+        page.evaluate("(config) => start(config)", {
+            "playlists": playlists, "loadMs": load_ms, "filterMs": filter_ms, "ignoreSearch": ignore_search,
+        })
+        return page, page.locator("#dialog")
+
+    yield opener
+    for page in pages:
+        page.close()
 
 
-def test_search_on_a_channel_with_no_playlists_settles_empty():
-    assert sp.search_picker(FakePage(), FakePicker([[]], [[]]), "Course") == []
+def test_search_reads_every_match_beyond_the_rows_in_view(open_picker_page):
+    page, picker = open_picker_page(PYTHONS)
+    names = sp.search_picker(page, picker, "Python")
+    assert sorted(names) == sorted(PYTHONS[:-1])
 
 
-def test_search_that_never_filters_fails_the_step():
-    with pytest.raises(sp.StepFailed, match="did not settle"):
-        sp.search_picker(FakePage(), FakePicker([["Other"]], [["Other"]]), "Course")
+def test_tick_scrolls_to_the_exact_row_below_the_view_and_ticks_only_it(open_picker_page):
+    page, picker = open_picker_page(PYTHONS)
+    sp.tick(page, picker, "Python")
+    assert page.evaluate("checkedNames()") == ["Python"]
+
+
+def test_tick_refuses_two_playlists_with_the_same_name(open_picker_page):
+    page, picker = open_picker_page(["Python", "Python", "Other"])
+    with pytest.raises(sp.StepFailed, match="more than one playlist named 'Python'"):
+        sp.tick(page, picker, "Python")
+    assert page.evaluate("checkedNames()") == []
+
+
+def test_search_on_a_channel_with_no_playlists_finds_none(open_picker_page):
+    page, picker = open_picker_page([])
+    assert sp.search_picker(page, picker, "Python") == []
+
+
+def test_search_that_never_filters_fails_the_step(open_picker_page, monkeypatch):
+    monkeypatch.setattr(sp, "_SCAN_POLLS", 6)
+    page, picker = open_picker_page(PYTHONS, ignore_search=True)
+    with pytest.raises(sp.StepFailed, match="could not read every playlist"):
+        sp.search_picker(page, picker, "Python")
+
+
+# -- when the picker cannot be read, nothing is created ------------------------------
+
+
+def test_unreadable_picker_reads_as_unknown_names(monkeypatch, spec):
+    monkeypatch.setattr(sp, "read_video_facts", lambda page, v: VideoFacts(v, title="T", visibility="public"))
+
+    def unreadable(page, video_id, name):
+        raise sp.StepFailed("could not read every playlist the Playlists picker lists for 'Course'")
+
+    monkeypatch.setattr(sp, "read_matching_names", unreadable)
+    facts, existing = sp.read_videos(object(), spec)
+    assert [f.video_id for f in facts] == [C, A, B] and existing is None
+
+
+def test_unreadable_picker_stops_create_with_needs_attention_and_creates_nothing(monkeypatch, spec, cfg):
+    steps = Steps(monkeypatch, spec, existing=None)
+    outcome = run(spec, cfg)
+    assert outcome.status == "needs_attention" and outcome.created is False and steps.calls == []
+    assert "nothing was created" in outcome.problems[0]
+    assert format_outcome(spec, outcome).startswith("Playlist not created; needs attention")

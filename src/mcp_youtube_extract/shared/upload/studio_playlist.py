@@ -89,34 +89,89 @@ def open_picker(page):
 
 _POLL_MS = 500
 _ROWS_LOAD_POLLS = 20
-_SETTLE_POLLS = _STEP_TIMEOUT_MS // _POLL_MS
+_SCAN_POLLS = 120
+
+_LIST_JS = r"""(picker, [query, move]) => {
+    const norm = (text) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+    const scrolls = (el) => el.scrollHeight > el.clientHeight + 1
+        && /(auto|scroll)/.test(getComputedStyle(el).overflowY);
+    const labels = [...picker.querySelectorAll('.label-text')];
+    const names = labels.map(el => el.innerText.trim()).filter(Boolean);
+    let box = labels.length ? labels[0].parentElement : null;
+    while (box && !scrolls(box)) box = box === picker ? null : box.parentElement;
+    const atEnd = !box || box.scrollTop + box.clientHeight >= box.scrollHeight - 1;
+    const rows = labels.map(el => (el.closest('label, li') || el).getBoundingClientRect()).filter(r => r.height > 0);
+    let covered = true;
+    if (box && rows.length) {
+        const area = box.getBoundingClientRect(), row = Math.min(...rows.map(r => r.height));
+        covered = Math.min(...rows.map(r => r.top)) - area.top < row
+            && area.bottom - Math.max(...rows.map(r => r.bottom)) < row;
+    }
+    if (box && move === 'top') box.scrollTop = 0;
+    if (box && move === 'down') box.scrollTop += Math.max(1, Math.floor(box.clientHeight / 2));
+    return {
+        names,
+        matches: names.every(n => norm(n).includes(norm(query))),
+        exact: names.filter(n => n === query).length,
+        atEnd,
+        covered,
+    };
+}"""
 
 
-def _normalize(text: str) -> str:
-    return " ".join(text.split()).lower()
+def settled_view(page, picker, name: str) -> dict:
+    """The picker's rows in view once they fill the list's visible area and two reads
+    agree: the list renders its rows a moment after it scrolls or filters."""
+    previous = None
+    for _ in range(_SCAN_POLLS):
+        page.wait_for_timeout(_POLL_MS)
+        view = picker.evaluate(_LIST_JS, [name, None])
+        if view["covered"] and view == previous:
+            return view
+        previous = view
+    raise StepFailed("the Playlists picker's list did not settle")
 
 
 def search_picker(page, picker, name: str) -> list[str]:
-    """Filter the picker to playlists matching the name; return the names it settles on.
+    """Search the picker for the name; return every playlist name it then lists.
 
-    Its list renders only the rows in view, so a playlist further down is not in the page
-    until the list is filtered. The rows load after the dialog shows (a channel with no
-    playlists has none), so this first waits up to 10s for a row, then, after searching,
-    for two reads 500ms apart that agree and all match the name."""
+    Its list renders only the rows in view, so this scrolls the filtered list to its end,
+    collecting the rows at each position once they settle. Rows that do not all match the
+    name mean the filter has not applied yet, so collecting starts over. If it cannot read
+    to the end, it raises StepFailed. The rows load after the dialog shows (a channel with
+    no playlists has none), so it first waits up to 10s for a row before searching."""
     for _ in range(_ROWS_LOAD_POLLS):
         if read_playlist_names(picker):
             break
         page.wait_for_timeout(_POLL_MS)
     picker.locator("input#search-input").fill(name)
-    query = _normalize(name)
-    previous = None
-    for _ in range(_SETTLE_POLLS):
-        page.wait_for_timeout(_POLL_MS)
-        names = read_playlist_names(picker)
-        if names == previous and all(query in _normalize(n) for n in names):
-            return names
-        previous = names
-    raise StepFailed(f"the Playlists picker did not settle on a search for '{name}'")
+    found: list[str] = []
+    for _ in range(_SCAN_POLLS):
+        view = settled_view(page, picker, name)
+        if not view["matches"]:
+            found = []
+            continue
+        found += [n for n in dict.fromkeys(view["names"]) if n not in found]
+        if view["atEnd"]:
+            return found
+        picker.evaluate(_LIST_JS, [name, "down"])
+    raise StepFailed(f"could not read every playlist the Playlists picker lists for '{name}'")
+
+
+def show_row(page, picker, name: str) -> None:
+    """Scroll the searched picker from the top until the playlist named exactly `name`
+    is in view; refuse if more than one row in view has that name."""
+    picker.evaluate(_LIST_JS, [name, "top"])
+    for _ in range(_SCAN_POLLS):
+        view = settled_view(page, picker, name)
+        if view["exact"] > 1:
+            raise StepFailed(f"the Playlists picker lists more than one playlist named '{name}'")
+        if view["exact"] == 1:
+            return
+        if view["atEnd"]:
+            break
+        picker.evaluate(_LIST_JS, [name, "down"])
+    raise StepFailed(f"the Playlists picker does not list '{name}'")
 
 
 _PICKER_NAMES_JS = """(picker) => [...new Set([...picker.querySelectorAll('.label-text')]
@@ -150,11 +205,18 @@ def read_matching_names(page, video_id: str, name: str) -> list[str]:
     return names
 
 
-def read_videos(page, spec: PlaylistSpec) -> tuple[list[VideoFacts], list[str]]:
+def read_videos(page, spec: PlaylistSpec) -> tuple[list[VideoFacts], list[str] | None]:
+    """(facts per video, the channel's playlist names matching the name). The names are
+    None when the picker's matching playlists could not all be read."""
     facts = [read_video_facts(page, video_id) for video_id in spec.video_ids]
     readable = next((f.video_id for f in facts if not f.problem), None)
-    existing = read_matching_names(page, readable, spec.name) if readable else []
-    return facts, existing
+    if not readable:
+        return facts, []
+    try:
+        return facts, read_matching_names(page, readable, spec.name)
+    except Exception:
+        logger.warning(f"playlist '{spec.name}': could not read the Playlists picker", exc_info=True)
+        return facts, None
 
 
 # -- creating -------------------------------------------------------------------
@@ -206,15 +268,12 @@ def click_create(page, form) -> None:
 
 def tick(page, picker, name: str) -> None:
     """Tick the named playlist in the picker; a playlist just created may already be ticked."""
-    search_picker(page, picker, name)
-    state = None
-    for _ in range(10):
-        state = is_ticked(picker, name)
-        if state is not None:
-            break
-        page.wait_for_timeout(500)
-    if state is None:
+    if name not in search_picker(page, picker, name):
         raise StepFailed(f"the Playlists picker does not list '{name}'")
+    show_row(page, picker, name)
+    state = is_ticked(picker, name)
+    if state is None:
+        raise StepFailed(f"the Playlists picker shows no checkbox for '{name}'")
     if not state:
         picker.locator(".label-text").filter(has_text=re.compile(rf"^\s*{re.escape(name)}\s*$")).first.click()
         page.wait_for_timeout(300)
@@ -316,7 +375,7 @@ def _create_steps(page, spec: PlaylistSpec, config: UploadConfig, now) -> Playli
         facts, existing = read_videos(page, spec)
         problems = preview_problems(spec, facts, existing)
         if problems:
-            return PlaylistOutcome(status="failed", problems=problems)
+            return PlaylistOutcome(status="failed" if existing is not None else "needs_attention", problems=problems)
         titles = {f.video_id: f.title for f in facts}
 
         for position, video_id in enumerate(spec.video_ids, start=1):
@@ -353,8 +412,8 @@ def _create_steps(page, spec: PlaylistSpec, config: UploadConfig, now) -> Playli
         evidence = save_evidence(page, config.failures_dir, f"playlist {step}", now())
         text = str(error).strip()
         reason = f"{step}: {text.splitlines()[0] if text else type(error).__name__}"
-        outcome = PlaylistOutcome(status="needs_attention" if created else "failed", playlist_id=playlist_id,
-                                  problems=[reason], evidence=evidence)
+        outcome = PlaylistOutcome(status="needs_attention" if created else "failed", created=created,
+                                  playlist_id=playlist_id, problems=[reason], evidence=evidence)
         if created:
             not_added = [v for v in spec.video_ids if v not in added]
             outcome.applied = _applied(spec, added, titles)
@@ -365,8 +424,8 @@ def _create_steps(page, spec: PlaylistSpec, config: UploadConfig, now) -> Playli
                     f"the playlist '{spec.name}' may exist on the channel; check Studio before creating it again"
                 )
         return outcome
-    outcome = PlaylistOutcome(status="needs_attention" if mismatches else "done", playlist_id=playlist_id,
-                              problems=mismatches)
+    outcome = PlaylistOutcome(status="needs_attention" if mismatches else "done", created=True,
+                              playlist_id=playlist_id, problems=mismatches)
     outcome.applied = _applied(spec, added, titles)
     return outcome
 
