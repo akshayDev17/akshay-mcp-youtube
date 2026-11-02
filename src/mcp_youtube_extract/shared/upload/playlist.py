@@ -99,17 +99,20 @@ def build_playlist_spec(params: dict[str, Any], config: UploadConfig) -> tuple[P
     return PlaylistSpec(channel=channel, name=name, visibility=visibility, video_ids=tuple(video_ids)), []
 
 
-def preview_problems(spec: PlaylistSpec, facts: list[VideoFacts], existing_names: list[str] | None) -> list[str]:
-    """What would stop this playlist being created as asked, found from the preview reads.
-    existing_names is None when the channel's playlists with similar names could not all be read."""
+def unread_names_problem(name: str, reason: str, evidence: list[str] = ()) -> str:
+    """Why nothing was created when the channel's playlists named like `name` could not all be read."""
+    text = (
+        f"could not read every playlist Studio's Playlists picker lists for '{name}' ({reason}), so "
+        f"the channel may already have a playlist with this name; nothing was created — check the "
+        f"channel's playlists in Studio, or try again"
+    )
+    return text + (f" (evidence: {', '.join(evidence)})" if evidence else "")
+
+
+def preview_problems(spec: PlaylistSpec, facts: list[VideoFacts], existing_names: list[str]) -> list[str]:
+    """What would stop this playlist being created as asked, found from the preview reads."""
     problems = [f"video {i} ({f.video_id}): {f.problem}" for i, f in enumerate(facts, start=1) if f.problem]
-    if existing_names is None:
-        problems.append(
-            f"could not read every playlist Studio's Playlists picker lists for '{spec.name}', so the "
-            f"channel may already have a playlist with this name; nothing was created — check the "
-            f"channel's playlists in Studio, or try again"
-        )
-    elif spec.name in existing_names:
+    if spec.name in existing_names:
         problems.append(
             f"the channel already has a playlist named '{spec.name}'; choose another name "
             f"(videos are added by picking the playlist by name)"

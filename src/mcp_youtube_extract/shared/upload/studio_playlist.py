@@ -26,6 +26,7 @@ from .playlist import (
     VideoFacts,
     compare_playlist_readback,
     preview_problems,
+    unread_names_problem,
 )
 from .studio import StepFailed, read_edit_page, save_evidence, visibility_word
 
@@ -64,16 +65,19 @@ def open_edit_page(page, video_id: str) -> None:
     session.skip_unsupported_notice(page)
 
 
+def first_line(error: Exception) -> str:
+    text = str(error).strip()
+    return text.splitlines()[0] if text else type(error).__name__
+
+
 def read_video_facts(page, video_id: str) -> VideoFacts:
     """Title and visibility of one of the channel's videos, from its Studio edit page."""
     open_edit_page(page, video_id)
     try:
         title, visibility, _ = read_edit_page(page)
     except Exception as error:
-        text = str(error).strip()
         return VideoFacts(video_id, problem=(
-            "could not be read from Studio; check it is one of this channel's videos, or try again "
-            f"({text.splitlines()[0] if text else type(error).__name__})"
+            f"could not be read from Studio; check it is one of this channel's videos, or try again ({first_line(error)})"
         ))
     return VideoFacts(video_id, title=title, visibility=visibility)
 
@@ -88,11 +92,12 @@ def open_picker(page):
 
 
 _POLL_MS = 500
-_ROWS_LOAD_POLLS = 20
 _SCAN_POLLS = 120
+_PASSES = 30
 
 _LIST_JS = r"""(picker, [query, move]) => {
     const norm = (text) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+    const shown = (el) => el.getBoundingClientRect().height > 0;
     const scrolls = (el) => el.scrollHeight > el.clientHeight + 1
         && /(auto|scroll)/.test(getComputedStyle(el).overflowY);
     const labels = [...picker.querySelectorAll('.label-text')];
@@ -107,6 +112,10 @@ _LIST_JS = r"""(picker, [query, move]) => {
         covered = Math.min(...rows.map(r => r.top)) - area.top < row
             && area.bottom - Math.max(...rows.map(r => r.bottom)) < row;
     }
+    const loading = [...picker.querySelectorAll('tp-yt-paper-spinner, tp-yt-paper-spinner-lite, [role="progressbar"]')]
+        .some(el => shown(el) && (el.hasAttribute('active') || el.getAttribute('role') === 'progressbar'));
+    const emptyShown = !names.length
+        && /\bno (playlists?|results|matches)\b|nothing found|couldn.?t find/i.test(picker.innerText);
     if (box && move === 'top') box.scrollTop = 0;
     if (box && move === 'down') box.scrollTop += Math.max(1, Math.floor(box.clientHeight / 2));
     return {
@@ -115,46 +124,60 @@ _LIST_JS = r"""(picker, [query, move]) => {
         exact: names.filter(n => n === query).length,
         atEnd,
         covered,
+        loading,
+        emptyShown,
     };
 }"""
 
 
 def settled_view(page, picker, name: str) -> dict:
-    """The picker's rows in view once they fill the list's visible area and two reads
-    agree: the list renders its rows a moment after it scrolls or filters."""
+    """The picker's rows in view once loading has finished, the rows fill the list's
+    visible area and two reads agree: the list renders its rows a moment after it
+    scrolls or filters."""
     previous = None
     for _ in range(_SCAN_POLLS):
         page.wait_for_timeout(_POLL_MS)
         view = picker.evaluate(_LIST_JS, [name, None])
-        if view["covered"] and view == previous:
+        if view["covered"] and not view["loading"] and view == previous:
             return view
         previous = view
     raise StepFailed("the Playlists picker's list did not settle")
 
 
-def search_picker(page, picker, name: str) -> list[str]:
-    """Search the picker for the name; return every playlist name it then lists.
-
-    Its list renders only the rows in view, so this scrolls the filtered list to its end,
-    collecting the rows at each position once they settle. Rows that do not all match the
-    name mean the filter has not applied yet, so collecting starts over. If it cannot read
-    to the end, it raises StepFailed. The rows load after the dialog shows (a channel with
-    no playlists has none), so it first waits up to 10s for a row before searching."""
-    for _ in range(_ROWS_LOAD_POLLS):
-        if read_playlist_names(picker):
-            break
-        page.wait_for_timeout(_POLL_MS)
-    picker.locator("input#search-input").fill(name)
+def scan_from_top(page, picker, name: str) -> list[str] | None:
+    """One pass over the searched list from the top to its end, collecting the names at
+    each position. None when the pass cannot count: a row that does not match the name
+    (the search has not filtered the list yet), or no rows without Studio saying there
+    are none."""
+    picker.evaluate(_LIST_JS, [name, "top"])
     found: list[str] = []
     for _ in range(_SCAN_POLLS):
         view = settled_view(page, picker, name)
+        if not view["names"]:
+            return [] if view["emptyShown"] and not found else None
         if not view["matches"]:
-            found = []
-            continue
+            return None
         found += [n for n in dict.fromkeys(view["names"]) if n not in found]
         if view["atEnd"]:
             return found
         picker.evaluate(_LIST_JS, [name, "down"])
+    raise StepFailed(f"the Playlists picker's list for '{name}' did not reach its end")
+
+
+def search_picker(page, picker, name: str) -> list[str]:
+    """Search the picker for the name; return every playlist name it then lists.
+
+    Its list renders only the rows in view, so each pass scrolls the filtered list from
+    the top to its end. The result counts only once two passes in a row agree, and an
+    empty result only when Studio shows that there are no playlists to list. Otherwise
+    it raises StepFailed."""
+    picker.locator("input#search-input").fill(name)
+    previous = None
+    for _ in range(_PASSES):
+        found = scan_from_top(page, picker, name)
+        if found is not None and found == previous:
+            return found
+        previous = found
     raise StepFailed(f"could not read every playlist the Playlists picker lists for '{name}'")
 
 
@@ -172,14 +195,6 @@ def show_row(page, picker, name: str) -> None:
             break
         picker.evaluate(_LIST_JS, [name, "down"])
     raise StepFailed(f"the Playlists picker does not list '{name}'")
-
-
-_PICKER_NAMES_JS = """(picker) => [...new Set([...picker.querySelectorAll('.label-text')]
-    .map(el => el.innerText.trim()).filter(Boolean))]"""
-
-
-def read_playlist_names(picker) -> list[str]:
-    return picker.evaluate(_PICKER_NAMES_JS)
 
 
 _TICKED_JS = """(picker, name) => {
@@ -205,18 +220,15 @@ def read_matching_names(page, video_id: str, name: str) -> list[str]:
     return names
 
 
-def read_videos(page, spec: PlaylistSpec) -> tuple[list[VideoFacts], list[str] | None]:
-    """(facts per video, the channel's playlist names matching the name). The names are
-    None when the picker's matching playlists could not all be read."""
-    facts = [read_video_facts(page, video_id) for video_id in spec.video_ids]
+def read_videos(page, spec: PlaylistSpec) -> list[VideoFacts]:
+    return [read_video_facts(page, video_id) for video_id in spec.video_ids]
+
+
+def read_existing_names(page, spec: PlaylistSpec, facts: list[VideoFacts]) -> list[str]:
+    """The channel's playlist names matching the name, from the first readable video's
+    picker. Raises when they cannot all be read."""
     readable = next((f.video_id for f in facts if not f.problem), None)
-    if not readable:
-        return facts, []
-    try:
-        return facts, read_matching_names(page, readable, spec.name)
-    except Exception:
-        logger.warning(f"playlist '{spec.name}': could not read the Playlists picker", exc_info=True)
-        return facts, None
+    return read_matching_names(page, readable, spec.name) if readable else []
 
 
 # -- creating -------------------------------------------------------------------
@@ -351,10 +363,17 @@ def read_playlist_videos(page, playlist_id: str, expected: int) -> list[str]:
 # -- the two jobs -------------------------------------------------------------------
 
 
-def preview(spec: PlaylistSpec, config: UploadConfig) -> tuple[list[VideoFacts], list[str]]:
+def preview(
+    spec: PlaylistSpec, config: UploadConfig, now: Callable[[], datetime] = datetime.now
+) -> tuple[list[VideoFacts], list[str]]:
     """(facts per video in order, problems). Creates nothing."""
     with studio_page(spec, config) as page:
-        facts, existing = read_videos(page, spec)
+        facts = read_videos(page, spec)
+        try:
+            existing = read_existing_names(page, spec, facts)
+        except Exception as error:
+            evidence = save_evidence(page, config.failures_dir, "playlist read playlist names", now())
+            return facts, preview_problems(spec, facts, []) + [unread_names_problem(spec.name, first_line(error), evidence)]
     return facts, preview_problems(spec, facts, existing)
 
 
@@ -372,10 +391,17 @@ def _create_steps(page, spec: PlaylistSpec, config: UploadConfig, now) -> Playli
     titles: dict[str, str | None] = {}
     step = "read videos"
     try:
-        facts, existing = read_videos(page, spec)
+        facts = read_videos(page, spec)
+        step = "read playlist names"
+        try:
+            existing = read_existing_names(page, spec, facts)
+        except Exception as error:
+            evidence = save_evidence(page, config.failures_dir, f"playlist {step}", now())
+            return PlaylistOutcome(status="needs_attention", evidence=evidence,
+                                   problems=[unread_names_problem(spec.name, first_line(error))])
         problems = preview_problems(spec, facts, existing)
         if problems:
-            return PlaylistOutcome(status="failed" if existing is not None else "needs_attention", problems=problems)
+            return PlaylistOutcome(status="failed", problems=problems)
         titles = {f.video_id: f.title for f in facts}
 
         for position, video_id in enumerate(spec.video_ids, start=1):
@@ -410,8 +436,7 @@ def _create_steps(page, spec: PlaylistSpec, config: UploadConfig, now) -> Playli
         )
     except Exception as error:
         evidence = save_evidence(page, config.failures_dir, f"playlist {step}", now())
-        text = str(error).strip()
-        reason = f"{step}: {text.splitlines()[0] if text else type(error).__name__}"
+        reason = f"{step}: {first_line(error)}"
         outcome = PlaylistOutcome(status="needs_attention" if created else "failed", created=created,
                                   playlist_id=playlist_id, problems=[reason], evidence=evidence)
         if created:

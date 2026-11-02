@@ -10,6 +10,7 @@ from mcp_youtube_extract.shared.upload.playlist import (
     format_outcome,
     format_preview,
     preview_problems,
+    unread_names_problem,
 )
 
 from .conftest import SECOND
@@ -173,12 +174,11 @@ def test_outcome_text(cfg):
     assert failed.startswith("Playlist not created (status: failed)")
 
 
-def test_unreadable_names_are_a_problem_that_creates_nothing(cfg):
+def test_unreadable_names_problem_says_why_and_that_nothing_was_created(cfg):
     spec, _ = build(cfg)
-    facts = facts_for(A, B, C)
-    problems = preview_problems(spec, facts, None)
-    assert len(problems) == 1 and "could not read every playlist" in problems[0]
-    assert "nothing was created" in problems[0]
-    not_created = format_outcome(spec, PlaylistOutcome("needs_attention", problems=problems))
+    problem = unread_names_problem("My list", "Timeout 30000ms exceeded.", ["/tmp/e.png"])
+    assert "for 'My list' (Timeout 30000ms exceeded.)" in problem and "nothing was created" in problem
+    assert problem.endswith("(evidence: /tmp/e.png)")
+    not_created = format_outcome(spec, PlaylistOutcome("needs_attention", problems=[problem]))
     assert not_created.startswith("Playlist not created; needs attention")
     assert "rather than creating it again" not in not_created
