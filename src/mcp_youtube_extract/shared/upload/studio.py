@@ -200,6 +200,21 @@ class StudioBackend:
     def ensure_session(self, channel: Channel, on_state) -> str | None:
         return session.ensure_session(channel, self.config, on_state)
 
+    def edit(self, spec) -> UploadOutcome:
+        """Edit an existing video's title, description, thumbnail or captions (see studio_edit)."""
+        from playwright.sync_api import sync_playwright
+
+        from .studio_edit import StudioEditor
+
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                **session.persistent_context_args(spec.channel, self.config, headless=self.config.headless)
+            )
+            try:
+                return StudioEditor(self.config, spec, self.now).run(context)
+            finally:
+                context.close()
+
     # -- the upload -------------------------------------------------------------
 
     def upload(self, spec: UploadSpec, on_video_id: Callable[[str], None] | None = None) -> UploadOutcome:

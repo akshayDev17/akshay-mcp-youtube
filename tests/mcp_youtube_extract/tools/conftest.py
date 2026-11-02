@@ -16,6 +16,7 @@ MAIN = "UCDzx6hNPpuha4fCwYA5WAyg"
 class FakeBackend:
     def __init__(self):
         self.uploaded = []
+        self.edited = []
         self.block_first = False
         import threading
         self.release = threading.Event()
@@ -30,6 +31,16 @@ class FakeBackend:
         n = len(self.uploaded)
         return UploadOutcome(status="done", video_id=f"vid{n:08d}", watch_url=f"https://youtu.be/vid{n:08d}",
                              is_short=False, applied={"visibility": spec.visibility or "scheduled"})
+
+    def edit(self, spec):
+        self.edited.append(spec)
+        if self.block_first and len(self.edited) == 1:
+            self.release.wait(5)
+        applied = {name: "ok" for name in spec.requested}
+        if spec.title is not None:
+            applied["title"] = spec.title
+        return UploadOutcome(status="done", video_id=spec.video_id, watch_url=f"https://youtu.be/{spec.video_id}",
+                             applied=applied)
 
 
 class FakeService:
