@@ -373,7 +373,8 @@ call can change any combination of:
 | Captions | `captions_path` + `captions_language` | absolute path to an `.srt` or `.vtt` file with timed cues; the language must be the video's own (e.g. `en`) |
 
 Fields you leave out stay untouched. Every input is checked before Studio opens, and
-nothing changes if any of them is invalid. The edit runs as a job in the same queue as
+`captions_language` is checked against the video's language before anything is saved;
+nothing changes if any input is invalid. The edit runs as a job in the same queue as
 uploads, using the same browser profile and sign-in. Title, description and thumbnail
 are saved together on the video's Details page. Captions are uploaded from its Languages
 page ("Upload manual", with timing) and published. Afterwards every changed field is read back
