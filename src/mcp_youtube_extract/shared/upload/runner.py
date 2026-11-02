@@ -84,7 +84,7 @@ class JobRunner:
         if not job.finished:
             return job
         for entry in job.entries:
-            if entry.state == "failed" or (entry.state == "interrupted" and not entry.video_id):
+            if entry.state == "failed" or (entry.state == "interrupted" and (job.kind == "edit" or not entry.video_id)):
                 entry.state = "waiting"
                 entry.problems, entry.evidence = [], []
         job.message = None

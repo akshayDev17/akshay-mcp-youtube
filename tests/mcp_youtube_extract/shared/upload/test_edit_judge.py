@@ -120,6 +120,7 @@ class FakeContext:
 
 
 def editor(cfg, spec, **steps):
+    steps.setdefault("_open_languages", lambda self, page: "Languages\nVideo language: English\n")
     ed = StudioEditor(cfg, spec)
     for name, fn in steps.items():
         setattr(ed, name, fn.__get__(ed))
@@ -211,3 +212,40 @@ def test_read_back_runs_on_a_fresh_page_only_for_unfailed_fields(make, cfg):
     assert seen == [["title"]] and ctx.opened == 2  # one page for captions, one for the read-back
     assert outcome.applied == {"title": "New title"}
     assert outcome.problems == ["captions not applied (upload captions: no file chooser)"]
+
+
+def test_caption_language_mismatch_changes_nothing(make, cfg):
+    calls = []
+
+    def record(self, page, fields):
+        calls.append(fields)
+        self.touched = True
+
+    ed = editor(cfg, make("title", "captions"), _open_languages=lambda self, page: "Video language: Hindi",
+                _edit_details=record, _edit_captions=record)
+    outcome = ed.run(FakeContext())
+    assert calls == []
+    assert outcome.status == "failed" and outcome.applied == {}
+    assert [p.split(" ")[0] for p in outcome.problems] == ["title", "captions"]
+    assert all("not applied (check the video's language: the video's language is Hindi, but the captions are "
+               "English" in p for p in outcome.problems)
+
+
+def test_languages_page_failure_still_edits_details(make, cfg):
+    calls = []
+
+    def languages_fail(self, page):
+        self._at("open the video's Languages page")
+        raise RuntimeError("Timeout 30000ms exceeded.")
+
+    def details(self, page, fields):
+        calls.append(fields)
+        self.touched = True
+
+    ed = editor(cfg, make("title", "captions"), _open_languages=languages_fail, _edit_details=details,
+                _edit_captions=lambda self, page, fields: calls.append(fields),
+                _read_back_details=lambda self, page, fields: self.observed.update({"title": "New title"}))
+    outcome = ed.run(FakeContext())
+    assert calls == [["title"]]
+    assert outcome.status == "needs_attention" and outcome.applied == {"title": "New title"}
+    assert outcome.problems == ["captions not applied (open the video's Languages page: Timeout 30000ms exceeded.)"]

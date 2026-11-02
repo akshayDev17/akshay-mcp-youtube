@@ -102,6 +102,22 @@ def test_interrupted_edit_is_marked_on_startup(tmp_path):
     assert store.load(job.job_id).entries[0].state == "interrupted"
 
 
+def test_resume_reruns_an_interrupted_edit(tmp_path, cfg):
+    store = JobStore(tmp_path / "jobs")
+    job = new_job("edit", [{"video_id": VIDEO, "title": "New"}], None, NOW)
+    job.entries[0].video_id = VIDEO
+    job.state, job.owner_pid = "running", 999_999_999
+    job.entries[0].state = "editing"
+    store.save(job)
+    store.mark_interrupted_on_startup()
+    backend = FakeBackend()
+    runner = JobRunner(store, backend, cfg, pause=lambda s: None, now=lambda: NOW)
+    runner.resume(job.job_id)
+    final = runner.wait(job.job_id, 5)
+    assert final.finished and final.entries[0].state == "done"
+    assert [s.title for s in backend.edits] == ["New"]
+
+
 def test_edit_waits_for_a_running_upload(tmp_path, cfg):
     """An edit queued behind an upload starts only after it: one browser at a time."""
     release, started = threading.Event(), threading.Event()

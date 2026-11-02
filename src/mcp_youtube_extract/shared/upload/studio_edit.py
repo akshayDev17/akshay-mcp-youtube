@@ -2,8 +2,10 @@
 
 Title, description and thumbnail are set on the video's Details page and saved
 together; captions are uploaded from its Languages page ("Upload manual") in the
-video's own language. Each group runs on its own, so one group failing does not
-stop the other. Afterwards every changed field is read back from a fresh page.
+video's own language. When captions are asked for, the video's language is checked
+before anything is saved; if it differs, nothing is changed. Otherwise each group runs
+on its own, so one group failing does not stop the other. Afterwards every changed
+field is read back from a fresh page.
 The media file itself is never touched: YouTube cannot replace it in place.
 """
 
@@ -84,6 +86,9 @@ class StudioEditor:
         page = context.pages[0] if context.pages else context.new_page()
         details = [name for name in self.spec.requested if name in _DETAILS_FIELDS]
         captions = [name for name in self.spec.requested if name == "captions"]
+        self._group(page, captions, self._check_captions_language)
+        details = [name for name in details if name not in self.errors]
+        captions = [name for name in captions if name not in self.errors]
         self._group(page, details, self._edit_details)
         # A fresh page: a failed details save can leave unsaved changes that block navigation.
         self._group(context.new_page() if captions else page, captions, self._edit_captions)
@@ -197,17 +202,25 @@ class StudioEditor:
         page.get_by_text("Video language:", exact=False).first.wait_for(state="visible")
         return page.evaluate("document.body ? document.body.innerText : ''")
 
-    def _edit_captions(self, page, fields: list[str]) -> None:
+    def _check_captions_language(self, page, fields: list[str]) -> None:
+        """Captions go only in the video's own language; if theirs differs, every
+        requested field is recorded as not applied, so nothing is saved."""
         text = self._open_languages(page)
         self._at("check the video's language")
-        shown = video_language_code(text)
         wanted = self.spec.captions_language
-        if shown != wanted:
-            shown_label = _VIDEO_LANGUAGE.search(text)
-            raise StepFailed(
-                f"the video's language is {shown_label.group(1).strip() if shown_label else 'not set'}, but the "
-                f"captions are {studio_language_label(wanted)}; this tool uploads captions only in the video's language"
-            )
+        if video_language_code(text) == wanted:
+            return
+        shown = _VIDEO_LANGUAGE.search(text)
+        reason = (
+            f"{self._step}: the video's language is {shown.group(1).strip() if shown else 'not set'}, but the "
+            f"captions are {studio_language_label(wanted)}; this tool uploads captions only in the video's language"
+        )
+        logger.warning(f"edit of {self.spec.video_id}: {reason}")
+        for name in self.spec.requested:
+            self.errors.setdefault(name, f"not applied ({reason})")
+
+    def _edit_captions(self, page, fields: list[str]) -> None:
+        self._open_languages(page)
         self._at("upload captions")
         page.wait_for_timeout(2000)  # the buttons render before they respond
         page.locator(_UPLOAD_CAPTIONS_BUTTON).first.click()
