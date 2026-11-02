@@ -61,6 +61,13 @@ def test_name_is_stripped_and_limited(cfg):
     assert build(cfg, name="x" * 150)[0] is not None
 
 
+def test_runs_of_whitespace_in_the_name_become_one_space(cfg):
+    spec, problems = build(cfg, name="  Intro  to\tK8s\n  part 2 ")
+    assert problems == [] and spec.name == "Intro to K8s part 2"
+    spec, _ = build(cfg, name="x  " * 75)
+    assert spec is not None and len(spec.name) == 149
+
+
 def test_angle_brackets_are_refused(cfg):
     spec, problems = build(cfg, name="a <b> c")
     assert spec is None and "'<' or '>'" in problems[0]

@@ -353,3 +353,48 @@ def test_unreadable_picker_in_create_also_reports_the_videos_that_cannot_be_adde
     assert outcome.status == "needs_attention" and outcome.created is False and steps.calls == []
     assert outcome.problems[0] == f"video 2 ({A}): could not be read from Studio"
     assert "could not read every playlist" in outcome.problems[1] and len(outcome.problems) == 2
+
+
+class SlowPlaylistPage:
+    """The youtube.com playlist page: 100 videos at first, the next batch only some
+    seconds after a scroll asks for it."""
+
+    def __init__(self, total, batch_after_waits):
+        self.ids = [f"{n:011d}" for n in range(total)]
+        self.loaded = min(100, total)
+        self.waits_since_wheel = None
+        self.batch_after_waits = batch_after_waits
+        self.mouse = self
+
+    def goto(self, url):
+        pass
+
+    def locator(self, selector):
+        return type("L", (), {"first": type("F", (), {"wait_for": lambda self, state: None})()})()
+
+    def evaluate(self, js):
+        return [f"https://www.youtube.com/watch?v={v}" for v in self.ids[:self.loaded]]
+
+    def wheel(self, dx, dy):
+        if self.waits_since_wheel is None:
+            self.waits_since_wheel = 0
+
+    def wait_for_timeout(self, ms):
+        if self.waits_since_wheel is None:
+            return
+        self.waits_since_wheel += 1
+        if self.waits_since_wheel >= self.batch_after_waits:
+            self.loaded = min(self.loaded + 100, len(self.ids))
+            self.waits_since_wheel = None
+
+
+def test_readback_waits_for_a_slow_next_batch(monkeypatch):
+    monkeypatch.setattr(sp, "_READBACK_POLL_MS", 0)
+    page = SlowPlaylistPage(total=120, batch_after_waits=3)
+    assert sp.read_playlist_videos(page, "PLx", 120) == page.ids
+
+
+def test_readback_stops_when_no_more_videos_arrive(monkeypatch):
+    monkeypatch.setattr(sp, "_READBACK_POLL_MS", 0)
+    page = SlowPlaylistPage(total=100, batch_after_waits=3)
+    assert sp.read_playlist_videos(page, "PLx", 120) == page.ids

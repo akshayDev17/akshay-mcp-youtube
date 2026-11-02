@@ -54,7 +54,7 @@ def build_playlist_spec(params: dict[str, Any], config: UploadConfig) -> tuple[P
     problems: list[str] = []
 
     name = params.get("name")
-    name = name.strip() if isinstance(name, str) else ""
+    name = " ".join(name.split()) if isinstance(name, str) else ""
     if not name:
         problems.append("name is required; propose one to the user if they did not give one")
     elif len(name) > PLAYLIST_TITLE_LIMIT:

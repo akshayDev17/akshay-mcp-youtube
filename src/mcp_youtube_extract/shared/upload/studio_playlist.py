@@ -342,21 +342,22 @@ def find_playlist(page, spec: PlaylistSpec) -> tuple[str, str | None]:
 _PLAYLIST_VIDEOS_JS = """() => [...document.querySelectorAll('ytd-playlist-video-renderer a#video-title')]
     .map(a => a.href)"""
 _WATCH_ID = re.compile(r"[?&]v=([A-Za-z0-9_-]{11})")
+_READBACK_POLL_MS = 1000
+_READBACK_STALL_POLLS = 5
 
 
 def read_playlist_videos(page, playlist_id: str, expected: int) -> list[str]:
     """Video ids in playlist order, from the playlist page as the signed-in owner sees it."""
     page.goto(f"https://www.youtube.com/playlist?list={playlist_id}")
     page.locator("ytd-playlist-video-renderer").first.wait_for(state="visible")
-    hrefs: list[str] = []
-    for _ in range(30):  # the page loads 100 videos at a time as it scrolls
-        hrefs = page.evaluate(_PLAYLIST_VIDEOS_JS)
-        if len(hrefs) >= expected:
-            break
+    hrefs = page.evaluate(_PLAYLIST_VIDEOS_JS)
+    unchanged = 0
+    while len(hrefs) < expected and unchanged < _READBACK_STALL_POLLS:  # it loads 100 videos at a time
         page.mouse.wheel(0, 20_000)
-        page.wait_for_timeout(1000)
-        if len(page.evaluate(_PLAYLIST_VIDEOS_JS)) == len(hrefs):
-            break
+        page.wait_for_timeout(_READBACK_POLL_MS)
+        seen = page.evaluate(_PLAYLIST_VIDEOS_JS)
+        unchanged = unchanged + 1 if len(seen) == len(hrefs) else 0
+        hrefs = seen
     return [m.group(1) for m in (_WATCH_ID.search(h) for h in hrefs) if m]
 
 
