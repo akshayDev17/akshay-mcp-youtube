@@ -323,7 +323,7 @@ until an official Data API backend replaces it.
 | `YT_UPLOAD_BROWSER` | `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser` | must be the browser that created the profiles |
 | `YT_UPLOAD_HEADLESS` | `true` | `false` shows the browser, for debugging |
 | `YT_UPLOAD_LOGIN_TIMEOUT` | `600` | seconds a job waits for you to sign in |
-| `YT_UPLOAD_CALL_WAIT` | `600` | seconds `upload_yt_video` waits before handing back a job id |
+| `YT_UPLOAD_CALL_WAIT` | `600` | seconds `upload_yt_video` and `create_yt_playlist` wait before handing back a job id |
 
 ```bash
 claude mcp add-json mcp_youtube_extract '{"command":"uv","args":["--directory","<repo>","run","mcp_youtube_extract"],"env":{"YT_UPLOAD_CHANNELS":"main=UCDzx6hNPpuha4fCwYA5WAyg"}}'
@@ -411,6 +411,8 @@ it creates nothing and reports `needs_attention` with the reason and a screensho
 channel's playlists in Studio, or try again). Preview and create run as jobs on the same queue as uploads, one
 at a time (a few seconds per video); like `upload_yt_video`, the call waits for the job and,
 if it has not finished in time, returns a job id to follow with `get_yt_upload_status`.
+A playlist job the server stops before it finishes is marked `interrupted` and is not
+resumed: preview again, or check Studio for the playlist before creating it again.
 
 ### Live tests
 
