@@ -87,18 +87,36 @@ def open_picker(page):
     return picker
 
 
-_FILTERED_JS = """([picker, query]) => {
-    const norm = (text) => text.replace(/\\s+/g, ' ').trim().toLowerCase();
-    return [...picker.querySelectorAll('.label-text')].every(el => norm(el.innerText).includes(norm(query)));
-}"""
+_POLL_MS = 500
+_ROWS_LOAD_POLLS = 20
+_SETTLE_POLLS = _STEP_TIMEOUT_MS // _POLL_MS
 
 
-def search_picker(page, picker, name: str) -> None:
-    """Filter the picker to playlists matching the name, and wait until every row it shows
-    matches. Its list renders only the rows in view, so a playlist further down is not in
-    the page until the list is filtered."""
+def _normalize(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
+def search_picker(page, picker, name: str) -> list[str]:
+    """Filter the picker to playlists matching the name; return the names it settles on.
+
+    Its list renders only the rows in view, so a playlist further down is not in the page
+    until the list is filtered. The rows load after the dialog shows (a channel with no
+    playlists has none), so this first waits up to 10s for a row, then, after searching,
+    for two reads 500ms apart that agree and all match the name."""
+    for _ in range(_ROWS_LOAD_POLLS):
+        if read_playlist_names(picker):
+            break
+        page.wait_for_timeout(_POLL_MS)
     picker.locator("input#search-input").fill(name)
-    page.wait_for_function(_FILTERED_JS, arg=[picker.element_handle(), name], timeout=_STEP_TIMEOUT_MS)
+    query = _normalize(name)
+    previous = None
+    for _ in range(_SETTLE_POLLS):
+        page.wait_for_timeout(_POLL_MS)
+        names = read_playlist_names(picker)
+        if names == previous and all(query in _normalize(n) for n in names):
+            return names
+        previous = names
+    raise StepFailed(f"the Playlists picker did not settle on a search for '{name}'")
 
 
 _PICKER_NAMES_JS = """(picker) => [...new Set([...picker.querySelectorAll('.label-text')]
@@ -127,8 +145,7 @@ def read_matching_names(page, video_id: str, name: str) -> list[str]:
     open_edit_page(page, video_id)
     read_edit_page(page)
     picker = open_picker(page)
-    search_picker(page, picker, name)
-    names = read_playlist_names(picker)
+    names = search_picker(page, picker, name)
     page.keyboard.press("Escape")
     return names
 

@@ -117,3 +117,47 @@ def test_unreadable_video_says_why_without_claiming_it_is_not_the_channels(monke
     facts = sp.read_video_facts(object(), A)
     assert facts.title is None and "could not be read from Studio" in facts.problem
     assert facts.problem.endswith("(Timeout 30000ms exceeded.)")
+
+
+class FakePicker:
+    """Playlist names the picker shows on each read, before and after the search is typed."""
+
+    def __init__(self, before_search, after_search):
+        self.reads = {False: list(before_search), True: list(after_search)}
+        self.searched = None
+
+    def evaluate(self, js, *args):
+        reads = self.reads[self.searched is not None]
+        return reads.pop(0) if len(reads) > 1 else reads[0]
+
+    def locator(self, selector):
+        picker = self
+
+        class SearchBox:
+            def fill(self, value):
+                picker.searched = value
+
+        return SearchBox()
+
+
+class FakePage:
+    def wait_for_timeout(self, ms):
+        pass
+
+
+def test_search_waits_for_rows_then_for_a_settled_matching_result():
+    picker = FakePicker(
+        before_search=[[], [], ["Other", "Course", "Course 2"]],
+        after_search=[[], ["Other", "Course"], ["Other", "Course"], ["Course", "course  2"]],
+    )
+    assert sp.search_picker(FakePage(), picker, "Course") == ["Course", "course  2"]
+    assert picker.searched == "Course" and picker.reads[False] == [["Other", "Course", "Course 2"]]
+
+
+def test_search_on_a_channel_with_no_playlists_settles_empty():
+    assert sp.search_picker(FakePage(), FakePicker([[]], [[]]), "Course") == []
+
+
+def test_search_that_never_filters_fails_the_step():
+    with pytest.raises(sp.StepFailed, match="did not settle"):
+        sp.search_picker(FakePage(), FakePicker([["Other"]], [["Other"]]), "Course")

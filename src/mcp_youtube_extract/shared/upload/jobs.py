@@ -174,14 +174,18 @@ def _playlist_status(job: Job) -> str:
     entry = job.entries[0]
     preview = bool(entry.params.get("preview"))
     lines = [f"Playlist job {job.job_id} ({'preview' if preview else 'create'}): {job.state.replace('_', ' ')}"]
-    if job.message:
+    if entry.state == "interrupted":
+        lines.append("The server stopped before this job finished.")
+        if preview:
+            lines.append("Call create_yt_playlist again to preview it.")
+        else:
+            lines.append("The playlist may exist on the channel; check Studio before creating it again.")
+    elif job.message:
         lines.append(job.message)
     if entry.report:
         lines += ["", entry.report]
     elif entry.problems:
         lines += ["Not created:"] + [f"- {p}" for p in entry.problems]
-    if entry.state == "interrupted" and not preview:
-        lines.append("The playlist may exist on the channel; check Studio before creating it again.")
     return "\n".join(lines)
 
 
