@@ -192,6 +192,27 @@ class StepFailed(Exception):
     pass
 
 
+def visibility_word(text: str) -> str | None:
+    """The visibility Studio's visibility block shows, as one lowercase word."""
+    lowered = text.lower()
+    return next((v for v in ("scheduled", "unlisted", "private", "public") if v in lowered), None)
+
+
+def read_edit_page(page, timeout_ms: int = _STEP_TIMEOUT_MS) -> tuple[str, str | None, str]:
+    """(title, visibility word, visibility block text) from an open video edit page."""
+    title_box = page.locator("#title-textarea #textbox").first
+    title_box.wait_for(state="visible", timeout=timeout_ms)
+    block = page.locator("ytcp-video-metadata-visibility").first
+    # The block renders its value after the title; wait for a visibility word.
+    page.wait_for_function(
+        """(el) => /public|private|unlisted|scheduled/i.test(el.innerText.replace(/^\\s*Visibility/i, ''))""",
+        arg=block.element_handle(),
+        timeout=timeout_ms,
+    )
+    visibility_text = block.inner_text()
+    return title_box.inner_text().strip(), visibility_word(visibility_text), visibility_text
+
+
 class StudioBackend:
     def __init__(self, config: UploadConfig, *, now: Callable[[], datetime] = datetime.now):
         self.config = config
@@ -214,6 +235,16 @@ class StudioBackend:
                 return StudioEditor(self.config, spec, self.now).run(context)
             finally:
                 context.close()
+
+    def preview_playlist(self, spec):
+        from . import studio_playlist
+
+        return studio_playlist.preview(spec, self.config)
+
+    def create_playlist(self, spec):
+        from . import studio_playlist
+
+        return studio_playlist.create(spec, self.config, self.now)
 
     # -- the upload -------------------------------------------------------------
 
@@ -437,20 +468,10 @@ class StudioBackend:
         try:
             page.goto(f"https://studio.youtube.com/video/{self._video_id}/edit")
             session.skip_unsupported_notice(page)
-            title_box = page.locator("#title-textarea #textbox").first
-            title_box.wait_for(state="visible")
+            title, visibility, visibility_text = read_edit_page(page)
             block = page.locator("ytcp-video-metadata-visibility").first
-            # The block renders its value after the title; wait for a visibility word.
-            page.wait_for_function(
-                """(el) => /public|private|unlisted|scheduled/i.test(el.innerText.replace(/^\\s*Visibility/i, ''))""",
-                arg=block.element_handle(),
-                timeout=_STEP_TIMEOUT_MS,
-            )
-            visibility_text = block.inner_text()
-            lowered = visibility_text.lower()
-            visibility = next((v for v in ("scheduled", "unlisted", "private", "public") if v in lowered), None)
             observed = {
-                "title": title_box.inner_text().strip(),
+                "title": title,
                 "visibility": visibility,
                 "publish_at": _parse_schedule(visibility_text),
                 "caption_languages": [],

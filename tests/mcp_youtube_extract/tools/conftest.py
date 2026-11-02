@@ -8,6 +8,7 @@ from mcp_youtube_extract.shared.upload import service
 from mcp_youtube_extract.shared.upload.backend import UploadOutcome
 from mcp_youtube_extract.shared.upload.config import load_config
 from mcp_youtube_extract.shared.upload.jobs import JobStore
+from mcp_youtube_extract.shared.upload.playlist import PlaylistOutcome, VideoFacts
 from mcp_youtube_extract.shared.upload.runner import JobRunner
 
 MAIN = "UCDzx6hNPpuha4fCwYA5WAyg"
@@ -17,12 +18,26 @@ class FakeBackend:
     def __init__(self):
         self.uploaded = []
         self.edited = []
+        self.playlists = []
         self.block_first = False
+        self.session_reason = None
         import threading
         self.release = threading.Event()
 
     def ensure_session(self, channel, on_state):
-        return None
+        return self.session_reason
+
+    def preview_playlist(self, spec):
+        self.playlists.append(("preview", spec))
+        if self.block_first:
+            self.release.wait(5)
+        return [VideoFacts(v, title=f"T{v[0]}", visibility="unlisted") for v in spec.video_ids], []
+
+    def create_playlist(self, spec):
+        self.playlists.append(("create", spec))
+        if self.block_first:
+            self.release.wait(5)
+        return PlaylistOutcome("done", playlist_id="PLnew0000001", applied={"name": spec.name})
 
     def upload(self, spec, on_video_id=None):
         self.uploaded.append(spec.title)

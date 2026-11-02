@@ -10,7 +10,7 @@ from mcp_youtube_extract._app import app
 
 def test_tools_registered():
     names = {t.name for t in asyncio.run(app.list_tools())}
-    assert {"upload_yt_video", "upload_yt_series", "get_yt_upload_status", "edit_yt_video"} <= names
+    assert {"upload_yt_video", "upload_yt_series", "get_yt_upload_status", "edit_yt_video", "create_yt_playlist"} <= names
 
 
 def test_login_flag_dispatches(monkeypatch):

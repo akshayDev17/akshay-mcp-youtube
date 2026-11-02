@@ -19,6 +19,7 @@ from .backend import Backend, UploadOutcome, failure_outcome
 from .config import UploadConfig
 from .edit import build_edit_spec
 from .jobs import Job, JobStore
+from .playlist import build_playlist_spec, format_outcome, format_preview
 from .spec import UploadSpec, build_spec, check_publish_at
 
 logger = get_logger(__name__)
@@ -84,9 +85,12 @@ class JobRunner:
         if not job.finished:
             return job
         for entry in job.entries:
-            if entry.state == "failed" or (entry.state == "interrupted" and (job.kind == "edit" or not entry.video_id)):
+            if entry.state == "failed" or (
+                entry.state == "interrupted"
+                and (job.kind == "edit" or (job.kind != "playlist" and not entry.video_id))
+            ):
                 entry.state = "waiting"
-                entry.problems, entry.evidence = [], []
+                entry.problems, entry.evidence, entry.report = [], [], None
         job.message = None
         self.submit(job)
         return job
@@ -128,7 +132,10 @@ class JobRunner:
             if entry.state != "waiting":
                 continue
             try:
-                attempted = self._run_entry(job, entry, attempted) or attempted
+                if job.kind == "playlist":
+                    self._run_playlist(job, entry)
+                else:
+                    attempted = self._run_entry(job, entry, attempted) or attempted
             except Exception as error:
                 logger.error(f"upload job {job.job_id} entry {entry.index} crashed", exc_info=True)
                 entry.apply(failure_outcome(entry.video_id, f"internal error: {error}", []))
@@ -194,6 +201,29 @@ class JobRunner:
                 )
         entry.apply(outcome)
         return True
+
+    def _run_playlist(self, job: Job, entry) -> None:
+        spec, problems = build_playlist_spec(entry.params, self.config)
+        if spec is None:
+            entry.state, entry.problems = "failed", problems
+            return
+        with self._upload_lock(job):
+            reason = self.backend.ensure_session(spec.channel, self._on_state(job))
+            if reason:
+                entry.state = "failed"
+                entry.problems = [f"the channel '{spec.channel.name}' is not signed in: {reason}"]
+                return
+            job.state, job.message = "running", None
+            entry.state = "uploading"
+            self._save(job)
+            if entry.params.get("preview"):
+                facts, problems = self.backend.preview_playlist(spec)
+                entry.state, entry.problems = ("failed" if problems else "done"), problems
+                entry.report = format_preview(spec, facts, problems)
+            else:
+                outcome = self.backend.create_playlist(spec)
+                entry.state, entry.problems, entry.evidence = outcome.status, outcome.problems, outcome.evidence
+                entry.report = format_outcome(spec, outcome)
 
     def _upload_lock(self, job: Job):
         """An exclusive lock shared by every server process using this home, so uploads

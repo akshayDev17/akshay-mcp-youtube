@@ -15,6 +15,9 @@ app = MCPServer(
         "video's title, description, thumbnail or captions with edit_yt_video (the "
         "video file itself cannot be replaced). If a channel needs "
         "signing in, a browser window opens on the owner's machine; tell the person "
-        "to sign in there, then keep checking the job's status."
+        "to sign in there, then keep checking the job's status. Create a playlist "
+        "with create_yt_playlist: ask the user for its visibility (there is no "
+        "default) and which videos, propose a name if they gave none, preview it, "
+        "and confirm the video order with the user before creating it."
     ),
 )

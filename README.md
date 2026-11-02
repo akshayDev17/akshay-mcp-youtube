@@ -305,8 +305,9 @@ To use this MCP server with a client, add the following configuration to your cl
 Three tools upload videos to channels you own: `upload_yt_video` (one video),
 `upload_yt_series` (a batch, as a background job) and `get_yt_upload_status` (follow a
 job). A fourth, `edit_yt_video`, changes an existing video (see
-[Editing a video](#editing-a-video)). They drive YouTube Studio in a dedicated Brave
-profile per channel, logged in once. This is a bridge until the Google Cloud project passes YouTube's
+[Editing a video](#editing-a-video)), and a fifth, `create_yt_playlist`, builds a playlist
+from the channel's videos (see [Playlists](#playlists)). They drive YouTube Studio in a
+dedicated Brave profile per channel, logged in once. This is a bridge until the Google Cloud project passes YouTube's
 API audit; automating Studio is outside YouTube's terms, so the channel carries that risk
 until an official Data API backend replaces it.
 
@@ -322,7 +323,7 @@ until an official Data API backend replaces it.
 | `YT_UPLOAD_BROWSER` | `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser` | must be the browser that created the profiles |
 | `YT_UPLOAD_HEADLESS` | `true` | `false` shows the browser, for debugging |
 | `YT_UPLOAD_LOGIN_TIMEOUT` | `600` | seconds a job waits for you to sign in |
-| `YT_UPLOAD_CALL_WAIT` | `600` | seconds `upload_yt_video` waits before handing back a job id |
+| `YT_UPLOAD_CALL_WAIT` | `600` | seconds `upload_yt_video` and `create_yt_playlist` wait before handing back a job id |
 
 ```bash
 claude mcp add-json mcp_youtube_extract '{"command":"uv","args":["--directory","<repo>","run","mcp_youtube_extract"],"env":{"YT_UPLOAD_CHANNELS":"main=UCDzx6hNPpuha4fCwYA5WAyg"}}'
@@ -385,6 +386,33 @@ from Studio and reported as applied or not. The result is `done` (all applied),
 The video file itself cannot be replaced: YouTube does not allow swapping an uploaded
 video's media in place, and `edit_yt_video` never re-uploads or deletes a video.
 Visibility, schedule and playlists are not edited by this tool.
+
+### Playlists
+
+`create_yt_playlist` creates a playlist on a configured channel through the same Studio
+profile. It takes `name`, `visibility` (`public`, `unlisted` or `private`, with no
+default) and `video_ids`: the channel's own 11-character video ids, in playlist order.
+Public, unlisted and private videos can all be added. The calling agent asks the user for
+the visibility and the videos when they were not given, and proposes a name if the user
+gave none.
+
+The default call (`preview=true`) creates nothing. It opens each video in Studio and lists
+its title and visibility in the planned order. After the user confirms the name,
+visibility and order, the same call with `preview=false` creates the playlist from the
+first video's Playlists picker with Studio's "Manually sorted" video order (Studio's
+default for new playlists is newest first), adds the remaining videos one at a time in
+order, and then reads the playlist back from Studio. It reports `done`, `needs_attention` (the playlist
+exists but something did not apply, so fix it in Studio and do not create it again) or
+`failed` (nothing was created). The picker selects playlists by name, so a name the channel
+already uses is refused. To be sure of that, it scrolls through every playlist the picker
+finds for the name, from the top, until two passes in a row agree; it treats an empty list
+as "no such playlist" only when Studio shows "No playlists available". If it cannot read them all,
+it creates nothing and reports `needs_attention` with the reason and a screenshot (check the
+channel's playlists in Studio, or try again). Preview and create run as jobs on the same queue as uploads, one
+at a time (a few seconds per video); like `upload_yt_video`, the call waits for the job and,
+if it has not finished in time, returns a job id to follow with `get_yt_upload_status`.
+A playlist job the server stops before it finishes is marked `interrupted` and is not
+resumed: preview again, or check Studio for the playlist before creating it again.
 
 ### Live tests
 

@@ -16,7 +16,8 @@ logger = get_logger(__name__)
         "job's state (queued, running, waiting for sign-in, pausing between uploads, "
         "finished, interrupted) and, per video, its state with watch and Studio links, what "
         "was applied, problems and failure-evidence paths. Once finished it lists every "
-        "video that is not done."
+        "video that is not done. Also reports a playlist job started by create_yt_playlist: "
+        "its state and, once finished, the preview or the created playlist's result."
     ),
 )
 def get_yt_upload_status(job_id: str) -> str:
