@@ -20,13 +20,13 @@ def spec(cfg):
 class Steps:
     """Records what the create flow does, standing in for the browser."""
 
-    def __init__(self, monkeypatch, spec, existing=(), fail_at=None, playlist_order=None):
+    def __init__(self, monkeypatch, spec, existing=(), fail_at=None, playlist_order=None, facts=None):
         self.calls = []
         self.fail_at = fail_at
         self.existing = existing
         self.current = None
         self.order = list(spec.video_ids) if playlist_order is None else playlist_order
-        facts = [VideoFacts(v, title=f"T{v[0]}", visibility="private") for v in spec.video_ids]
+        facts = facts or [VideoFacts(v, title=f"T{v[0]}", visibility="private") for v in spec.video_ids]
         fake = {
             "read_videos": lambda page, s: facts,
             "read_existing_names": self.existing_names,
@@ -169,7 +169,7 @@ function start({playlists, loadMs, filterMs, ignoreSearch, keepScroll, blankMs, 
     render(true);
   }
   function render(force) {
-    spacer.style.height = (shown.length * ROW) + 'px';
+    spacer.style.height = (shown.length ? Math.max(shown.length * ROW, list.clientHeight) + 4 : 0) + 'px';
     const first = Math.floor(list.scrollTop / ROW), last = Math.ceil((list.scrollTop + list.clientHeight) / ROW);
     if (!force && range === `${first}-${last}`) return;
     range = `${first}-${last}`;
@@ -260,6 +260,13 @@ def test_a_single_existing_match_is_read_once_and_ticked(open_picker_page):
     assert page.evaluate("checkedNames()") == ["k8s"]
 
 
+def test_two_matches_in_a_short_list_are_read_and_the_exact_one_ticked(open_picker_page):
+    page, picker = open_picker_page(["Course A", "Course B"] + [f"Other {n}" for n in range(10)])
+    assert sp.search_picker(page, picker, "Course") == ["Course A", "Course B"]
+    sp.tick(page, picker, "Course B")
+    assert page.evaluate("checkedNames()") == ["Course B"]
+
+
 def test_slow_filter_that_keeps_the_scroll_offset_still_reads_from_the_top(open_picker_page):
     newest_first = [f"Python {n}" for n in range(6, 0, -1)] + [f"Other {n}" for n in range(12)] + ["Python"]
     page, picker = open_picker_page(newest_first, filter_ms=1500, keep_scroll=True)
@@ -336,3 +343,13 @@ def test_unreadable_picker_stops_create_with_needs_attention_and_creates_nothing
     assert "nothing was created" in outcome.problems[0]
     assert outcome.evidence == ["/evidence/playlist read playlist names"]
     assert format_outcome(spec, outcome).startswith("Playlist not created; needs attention")
+
+
+def test_unreadable_picker_in_create_also_reports_the_videos_that_cannot_be_added(monkeypatch, spec, cfg):
+    facts = [VideoFacts(C, "Tc", "private"), VideoFacts(A, problem="could not be read from Studio"),
+             VideoFacts(B, "Tb", "private")]
+    steps = Steps(monkeypatch, spec, existing=None, facts=facts)
+    outcome = run(spec, cfg)
+    assert outcome.status == "needs_attention" and outcome.created is False and steps.calls == []
+    assert outcome.problems[0] == f"video 2 ({A}): could not be read from Studio"
+    assert "could not read every playlist" in outcome.problems[1] and len(outcome.problems) == 2

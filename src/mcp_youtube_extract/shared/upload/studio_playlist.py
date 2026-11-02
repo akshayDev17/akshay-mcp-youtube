@@ -105,13 +105,14 @@ _LIST_JS = r"""(picker, [query, move]) => {
     const names = labels.map(el => el.innerText.trim()).filter(Boolean);
     let box = labels.length ? labels[0].parentElement : null;
     while (box && !scrolls(box)) box = box === picker ? null : box.parentElement;
-    const atEnd = !box || box.scrollTop + box.clientHeight >= box.scrollHeight - 1;
     const rows = labels.map(el => (el.closest('label, li') || el).getBoundingClientRect()).filter(r => r.height > 0);
+    const row = rows.length ? Math.min(...rows.map(r => r.height)) : 1;
+    const atEnd = !box || box.scrollTop + box.clientHeight >= box.scrollHeight - row;
     let covered = true;
     if (box && rows.length) {
-        const area = box.getBoundingClientRect(), row = Math.min(...rows.map(r => r.height));
+        const area = box.getBoundingClientRect();
         covered = Math.min(...rows.map(r => r.top)) - area.top < row
-            && area.bottom - Math.max(...rows.map(r => r.bottom)) < row;
+            && (atEnd || area.bottom - Math.max(...rows.map(r => r.bottom)) < row);
     }
     const emptyShown = !names.length
         && picker.innerText.split('\n').some(line => line.trim() === 'No playlists available');
@@ -397,7 +398,8 @@ def _create_steps(page, spec: PlaylistSpec, config: UploadConfig, now) -> Playli
         except Exception as error:
             evidence = save_evidence(page, config.failures_dir, f"playlist {step}", now())
             return PlaylistOutcome(status="needs_attention", evidence=evidence,
-                                   problems=[unread_names_problem(spec.name, first_line(error))])
+                                   problems=preview_problems(spec, facts, [])
+                                   + [unread_names_problem(spec.name, first_line(error))])
         problems = preview_problems(spec, facts, existing)
         if problems:
             return PlaylistOutcome(status="failed", problems=problems)
