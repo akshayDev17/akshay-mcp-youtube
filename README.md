@@ -305,8 +305,9 @@ To use this MCP server with a client, add the following configuration to your cl
 Three tools upload videos to channels you own: `upload_yt_video` (one video),
 `upload_yt_series` (a batch, as a background job) and `get_yt_upload_status` (follow a
 job). A fourth, `edit_yt_video`, changes an existing video (see
-[Editing a video](#editing-a-video)). They drive YouTube Studio in a dedicated Brave
-profile per channel, logged in once. This is a bridge until the Google Cloud project passes YouTube's
+[Editing a video](#editing-a-video)), and a fifth, `create_yt_playlist`, builds a playlist
+from the channel's videos (see [Playlists](#playlists)). They drive YouTube Studio in a
+dedicated Brave profile per channel, logged in once. This is a bridge until the Google Cloud project passes YouTube's
 API audit; automating Studio is outside YouTube's terms, so the channel carries that risk
 until an official Data API backend replaces it.
 
@@ -385,6 +386,26 @@ from Studio and reported as applied or not. The result is `done` (all applied),
 The video file itself cannot be replaced: YouTube does not allow swapping an uploaded
 video's media in place, and `edit_yt_video` never re-uploads or deletes a video.
 Visibility, schedule and playlists are not edited by this tool.
+
+### Playlists
+
+`create_yt_playlist` creates a playlist on a configured channel through the same Studio
+profile. It takes `name`, `visibility` (`public`, `unlisted` or `private`, with no
+default) and `video_ids`: the channel's own videos, as ids or links, in playlist order.
+Public, unlisted and private videos can all be added. The calling agent asks the user for
+the visibility and the videos when they were not given, and proposes a name if the user
+gave none.
+
+The default call (`preview=true`) creates nothing. It opens each video in Studio and lists
+its title and visibility in the planned order. After the user confirms the name,
+visibility and order, the same call with `preview=false` creates the playlist from the
+first video's Playlists picker with Studio's "Manually sorted" video order (Studio's
+default for new playlists is newest first), adds the remaining videos one at a time in
+order, and then reads the playlist back from Studio. It reports `done`, `needs_attention` (the playlist
+exists but something did not apply, so fix it in Studio and do not create it again) or
+`failed` (nothing was created). The picker selects playlists by name, so a name the channel
+already uses is refused. The call runs while you wait (a few seconds per video) and is
+refused while an upload is using the profile.
 
 ### Live tests
 
