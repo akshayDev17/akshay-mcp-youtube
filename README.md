@@ -391,7 +391,7 @@ Visibility, schedule and playlists are not edited by this tool.
 
 `create_yt_playlist` creates a playlist on a configured channel through the same Studio
 profile. It takes `name`, `visibility` (`public`, `unlisted` or `private`, with no
-default) and `video_ids`: the channel's own videos, as ids or links, in playlist order.
+default) and `video_ids`: the channel's own 11-character video ids, in playlist order.
 Public, unlisted and private videos can all be added. The calling agent asks the user for
 the visibility and the videos when they were not given, and proposes a name if the user
 gave none.
@@ -404,8 +404,9 @@ default for new playlists is newest first), adds the remaining videos one at a t
 order, and then reads the playlist back from Studio. It reports `done`, `needs_attention` (the playlist
 exists but something did not apply, so fix it in Studio and do not create it again) or
 `failed` (nothing was created). The picker selects playlists by name, so a name the channel
-already uses is refused. The call runs while you wait (a few seconds per video) and is
-refused while an upload is using the profile.
+already uses is refused. Preview and create run as jobs on the same queue as uploads, one
+at a time (a few seconds per video); like `upload_yt_video`, the call waits for the job and,
+if it has not finished in time, returns a job id to follow with `get_yt_upload_status`.
 
 ### Live tests
 

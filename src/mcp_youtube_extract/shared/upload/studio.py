@@ -236,6 +236,16 @@ class StudioBackend:
             finally:
                 context.close()
 
+    def preview_playlist(self, spec):
+        from . import studio_playlist
+
+        return studio_playlist.preview(spec, self.config)
+
+    def create_playlist(self, spec):
+        from . import studio_playlist
+
+        return studio_playlist.create(spec, self.config, self.now)
+
     # -- the upload -------------------------------------------------------------
 
     def upload(self, spec: UploadSpec, on_video_id: Callable[[str], None] | None = None) -> UploadOutcome:

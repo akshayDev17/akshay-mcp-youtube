@@ -9,7 +9,6 @@ from mcp_youtube_extract.shared.upload.playlist import (
     compare_playlist_readback,
     format_outcome,
     format_preview,
-    parse_video_id,
     preview_problems,
 )
 
@@ -72,44 +71,21 @@ def test_videos_are_required(cfg, ids):
     assert spec is None and any("ask the user which videos" in p for p in problems)
 
 
-def test_links_become_ids_in_order(cfg):
-    spec, problems = build(
-        cfg,
-        video_ids=[
-            f"https://www.youtube.com/watch?v={A}&t=5",
-            f"https://youtu.be/{B}",
-            f"https://studio.youtube.com/video/{C}/edit",
-        ],
-    )
-    assert problems == [] and spec.video_ids == (A, B, C)
-
-
 @pytest.mark.parametrize(
-    "value, expected",
-    [
-        (A, A),
-        (f" {A} ", A),
-        (f"https://www.youtube.com/shorts/{A}", A),
-        (f"https://www.youtube.com/live/{A}?si=x", A),
-    ],
+    "value", ["short", f"https://youtu.be/{A}", f"https://www.youtube.com/watch?v={A}", f" {A}", f"{A}\n", "", None, A + "x"]
 )
-def test_parse_video_id(value, expected):
-    assert parse_video_id(value) == expected
-
-
-@pytest.mark.parametrize("value", ["short", "https://www.youtube.com/playlist?list=PLxyz", "", None, A + "x"])
-def test_parse_video_id_rejects(value):
-    with pytest.raises(ValueError):
-        parse_video_id(value)
+def test_only_bare_ids_are_accepted(cfg, value):
+    spec, problems = build(cfg, video_ids=[value])
+    assert spec is None and problems == [f"video 1: '{value}' is not an 11-character YouTube video id"]
 
 
 def test_bad_ids_are_reported_by_position(cfg):
     spec, problems = build(cfg, video_ids=[A, "nope", B])
-    assert spec is None and problems == ["video 2: 'nope' is not a YouTube video id or video link"]
+    assert spec is None and problems == ["video 2: 'nope' is not an 11-character YouTube video id"]
 
 
 def test_duplicates_are_refused(cfg):
-    spec, problems = build(cfg, video_ids=[A, B, f"https://youtu.be/{A}"])
+    spec, problems = build(cfg, video_ids=[A, B, A])
     assert spec is None and "already at position 1" in problems[0]
 
 

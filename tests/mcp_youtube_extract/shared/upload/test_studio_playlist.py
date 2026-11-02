@@ -1,6 +1,5 @@
 """Tests for the Studio playlist steps' sequencing and outcomes, with the page steps faked."""
 
-import fcntl
 from datetime import datetime
 
 import pytest
@@ -109,13 +108,12 @@ def test_readback_mismatch_is_needs_attention(monkeypatch, spec, cfg):
     assert outcome.problems == [f"video order is {A}, {C}, {B}, expected {C}, {A}, {B}"]
 
 
-def test_profile_lock_refuses_while_an_upload_holds_it(cfg):
-    cfg.jobs_dir.mkdir(parents=True)
-    with open(cfg.jobs_dir / ".upload.lock", "a+") as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
-        with pytest.raises(sp.ProfileBusy):
-            with sp.profile_lock(cfg):
-                pass
-        fcntl.flock(held, fcntl.LOCK_UN)
-    with sp.profile_lock(cfg):
-        pass
+def test_unreadable_video_says_why_without_claiming_it_is_not_the_channels(monkeypatch):
+    def slow(page):
+        raise TimeoutError("Timeout 30000ms exceeded.\nCall log: ...")
+
+    monkeypatch.setattr(sp, "open_edit_page", lambda page, video_id: None)
+    monkeypatch.setattr(sp, "read_edit_page", slow)
+    facts = sp.read_video_facts(object(), A)
+    assert facts.title is None and "could not be read from Studio" in facts.problem
+    assert facts.problem.endswith("(Timeout 30000ms exceeded.)")

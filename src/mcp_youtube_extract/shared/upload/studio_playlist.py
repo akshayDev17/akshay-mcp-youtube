@@ -12,7 +12,6 @@ As in studio.py, each step has a name, and a failure leaves a screenshot and the
 visible text behind.
 """
 
-import fcntl
 import re
 from contextlib import contextmanager
 from datetime import datetime
@@ -39,26 +38,6 @@ _PICKER = "ytcp-playlist-dialog tp-yt-paper-dialog"
 _FORM = "ytcp-playlist-creation-dialog tp-yt-paper-dialog"
 _MANUAL_ORDER = "Manually sorted"
 _PLAYLIST_LINK = re.compile(r"(?:[?&]list=|/playlist/)([A-Za-z0-9_-]{10,})")
-
-
-class ProfileBusy(Exception):
-    """Another upload or playlist job is using the channel's browser profile."""
-
-
-@contextmanager
-def profile_lock(config: UploadConfig):
-    """The lock upload jobs hold (jobs/.upload.lock), taken without waiting: Studio work
-    on a channel profile runs one at a time across every server process."""
-    config.jobs_dir.mkdir(parents=True, exist_ok=True)
-    with open(config.jobs_dir / ".upload.lock", "a+") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ProfileBusy("an upload is using the channel's browser profile; try again once it finishes") from None
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 @contextmanager
@@ -90,8 +69,12 @@ def read_video_facts(page, video_id: str) -> VideoFacts:
     open_edit_page(page, video_id)
     try:
         title, visibility, _ = read_edit_page(page)
-    except Exception:
-        return VideoFacts(video_id, problem="Studio does not show it as one of this channel's videos")
+    except Exception as error:
+        text = str(error).strip()
+        return VideoFacts(video_id, problem=(
+            "could not be read from Studio; check it is one of this channel's videos, or try again "
+            f"({text.splitlines()[0] if text else type(error).__name__})"
+        ))
     return VideoFacts(video_id, title=title, visibility=visibility)
 
 
@@ -104,11 +87,18 @@ def open_picker(page):
     return picker
 
 
+_FILTERED_JS = """([picker, query]) => {
+    const norm = (text) => text.replace(/\\s+/g, ' ').trim().toLowerCase();
+    return [...picker.querySelectorAll('.label-text')].every(el => norm(el.innerText).includes(norm(query)));
+}"""
+
+
 def search_picker(page, picker, name: str) -> None:
-    """Filter the picker to playlists matching the name. Its list renders only the rows in
-    view, so a playlist further down is not in the page until the list is filtered."""
+    """Filter the picker to playlists matching the name, and wait until every row it shows
+    matches. Its list renders only the rows in view, so a playlist further down is not in
+    the page until the list is filtered."""
     picker.locator("input#search-input").fill(name)
-    page.wait_for_timeout(1000)
+    page.wait_for_function(_FILTERED_JS, arg=[picker.element_handle(), name], timeout=_STEP_TIMEOUT_MS)
 
 
 _PICKER_NAMES_JS = """(picker) => [...new Set([...picker.querySelectorAll('.label-text')]

@@ -14,10 +14,7 @@ from .config import Channel, ConfigError, UploadConfig
 PLAYLIST_VISIBILITIES = ("public", "unlisted", "private")
 PLAYLIST_TITLE_LIMIT = 150
 
-_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
-_VIDEO_ID_IN_LINK = re.compile(
-    r"(?:youtu\.be/|/shorts/|/live/|/embed/|studio\.youtube\.com/video/|[?&]v=)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])"
-)
+_VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 
 
 @dataclass(frozen=True)
@@ -50,17 +47,6 @@ class PlaylistOutcome:
     evidence: list[str] = field(default_factory=list)
 
 
-def parse_video_id(value: Any) -> str:
-    """The 11-character id from a bare id, a watch / youtu.be / shorts link, or a Studio link."""
-    text = str(value).strip() if value is not None else ""
-    if _VIDEO_ID.match(text):
-        return text
-    match = _VIDEO_ID_IN_LINK.search(text)
-    if match:
-        return match.group(1)
-    raise ValueError(f"'{text}' is not a YouTube video id or video link")
-
-
 def build_playlist_spec(params: dict[str, Any], config: UploadConfig) -> tuple[PlaylistSpec | None, list[str]]:
     """Validate a create-playlist request before anything touches Studio."""
     problems: list[str] = []
@@ -90,11 +76,9 @@ def build_playlist_spec(params: dict[str, Any], config: UploadConfig) -> tuple[P
     if not raw_ids:
         problems.append("video_ids is required: ask the user which videos to add, in which order")
     else:
-        for position, raw in enumerate(raw_ids, start=1):
-            try:
-                video_id = parse_video_id(raw)
-            except ValueError as error:
-                problems.append(f"video {position}: {error}")
+        for position, video_id in enumerate(raw_ids, start=1):
+            if not (isinstance(video_id, str) and _VIDEO_ID.fullmatch(video_id)):
+                problems.append(f"video {position}: '{video_id}' is not an 11-character YouTube video id")
                 continue
             if video_id in video_ids:
                 problems.append(

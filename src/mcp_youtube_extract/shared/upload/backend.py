@@ -12,6 +12,7 @@ from .spec import UploadSpec
 
 if TYPE_CHECKING:
     from .edit import EditSpec
+    from .playlist import PlaylistOutcome, PlaylistSpec, VideoFacts
 
 OutcomeStatus = Literal["done", "needs_attention", "failed"]
 
@@ -49,3 +50,9 @@ class Backend(Protocol):
 
     def edit(self, spec: "EditSpec") -> UploadOutcome:
         """Change only the fields the spec names on an existing video, then read them back."""
+
+    def preview_playlist(self, spec: "PlaylistSpec") -> "tuple[list[VideoFacts], list[str]]":
+        """(facts per video in order, problems). Creates nothing."""
+
+    def create_playlist(self, spec: "PlaylistSpec") -> "PlaylistOutcome":
+        """Create the playlist with its videos in order, and read it back."""

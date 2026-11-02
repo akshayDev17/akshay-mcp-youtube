@@ -34,6 +34,7 @@ class Entry:
     problems: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
+    report: str | None = None
 
     def apply(self, outcome: UploadOutcome) -> None:
         self.state = outcome.status
@@ -50,7 +51,7 @@ class Entry:
 @dataclass
 class Job:
     job_id: str
-    kind: Literal["video", "series", "edit"]
+    kind: Literal["video", "series", "edit", "playlist"]
     created_at: datetime
     state: JobState
     entries: list[Entry]
@@ -169,7 +170,24 @@ def _entry_lines(entry: Entry) -> list[str]:
     return lines
 
 
+def _playlist_status(job: Job) -> str:
+    entry = job.entries[0]
+    preview = bool(entry.params.get("preview"))
+    lines = [f"Playlist job {job.job_id} ({'preview' if preview else 'create'}): {job.state.replace('_', ' ')}"]
+    if job.message:
+        lines.append(job.message)
+    if entry.report:
+        lines += ["", entry.report]
+    elif entry.problems:
+        lines += ["Not created:"] + [f"- {p}" for p in entry.problems]
+    if entry.state == "interrupted" and not preview:
+        lines.append("The playlist may exist on the channel; check Studio before creating it again.")
+    return "\n".join(lines)
+
+
 def format_status(job: Job, now: datetime) -> str:
+    if job.kind == "playlist":
+        return _playlist_status(job)
     state = job.state.replace("_", " ")
     if job.state == "pausing" and job.pause_until:
         state = f"pausing until {_local(job.pause_until)} before the next upload"
