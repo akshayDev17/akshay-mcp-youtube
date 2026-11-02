@@ -406,7 +406,7 @@ exists but something did not apply, so fix it in Studio and do not create it aga
 `failed` (nothing was created). The picker selects playlists by name, so a name the channel
 already uses is refused. To be sure of that, it scrolls through every playlist the picker
 finds for the name, from the top, until two passes in a row agree; it treats an empty list
-as "no such playlist" only when Studio says it has no results. If it cannot read them all,
+as "no such playlist" only when Studio shows "No playlists available". If it cannot read them all,
 it creates nothing and reports `needs_attention` with the reason and a screenshot (check the
 channel's playlists in Studio, or try again). Preview and create run as jobs on the same queue as uploads, one
 at a time (a few seconds per video); like `upload_yt_video`, the call waits for the job and,

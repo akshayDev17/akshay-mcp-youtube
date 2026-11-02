@@ -97,10 +97,11 @@ _PASSES = 30
 
 _LIST_JS = r"""(picker, [query, move]) => {
     const norm = (text) => text.replace(/\s+/g, ' ').trim().toLowerCase();
-    const shown = (el) => el.getBoundingClientRect().height > 0;
+    const visible = (el) => el.getBoundingClientRect().height > 0
+        && getComputedStyle(el.closest('ytcp-ve') || el).display !== 'none';
     const scrolls = (el) => el.scrollHeight > el.clientHeight + 1
         && /(auto|scroll)/.test(getComputedStyle(el).overflowY);
-    const labels = [...picker.querySelectorAll('.label-text')];
+    const labels = [...picker.querySelectorAll('.label-text')].filter(visible);
     const names = labels.map(el => el.innerText.trim()).filter(Boolean);
     let box = labels.length ? labels[0].parentElement : null;
     while (box && !scrolls(box)) box = box === picker ? null : box.parentElement;
@@ -112,10 +113,8 @@ _LIST_JS = r"""(picker, [query, move]) => {
         covered = Math.min(...rows.map(r => r.top)) - area.top < row
             && area.bottom - Math.max(...rows.map(r => r.bottom)) < row;
     }
-    const loading = [...picker.querySelectorAll('tp-yt-paper-spinner, tp-yt-paper-spinner-lite, [role="progressbar"]')]
-        .some(el => shown(el) && (el.hasAttribute('active') || el.getAttribute('role') === 'progressbar'));
     const emptyShown = !names.length
-        && /\bno (playlists?|results|matches)\b|nothing found|couldn.?t find/i.test(picker.innerText);
+        && picker.innerText.split('\n').some(line => line.trim() === 'No playlists available');
     if (box && move === 'top') box.scrollTop = 0;
     if (box && move === 'down') box.scrollTop += Math.max(1, Math.floor(box.clientHeight / 2));
     return {
@@ -124,21 +123,20 @@ _LIST_JS = r"""(picker, [query, move]) => {
         exact: names.filter(n => n === query).length,
         atEnd,
         covered,
-        loading,
         emptyShown,
     };
 }"""
 
 
 def settled_view(page, picker, name: str) -> dict:
-    """The picker's rows in view once loading has finished, the rows fill the list's
-    visible area and two reads agree: the list renders its rows a moment after it
-    scrolls or filters."""
+    """The picker's visible rows once they fill the list's visible area and two reads
+    agree: the list renders its rows a moment after it scrolls or filters, and keeps
+    rows it no longer shows in the page, hidden."""
     previous = None
     for _ in range(_SCAN_POLLS):
         page.wait_for_timeout(_POLL_MS)
         view = picker.evaluate(_LIST_JS, [name, None])
-        if view["covered"] and not view["loading"] and view == previous:
+        if view["covered"] and view == previous:
             return view
         previous = view
     raise StepFailed("the Playlists picker's list did not settle")
@@ -147,8 +145,8 @@ def settled_view(page, picker, name: str) -> dict:
 def scan_from_top(page, picker, name: str) -> list[str] | None:
     """One pass over the searched list from the top to its end, collecting the names at
     each position. None when the pass cannot count: a row that does not match the name
-    (the search has not filtered the list yet), or no rows without Studio saying there
-    are none."""
+    (the search has not filtered the list yet), or no rows without Studio showing "No
+    playlists available"."""
     picker.evaluate(_LIST_JS, [name, "top"])
     found: list[str] = []
     for _ in range(_SCAN_POLLS):
@@ -169,8 +167,8 @@ def search_picker(page, picker, name: str) -> list[str]:
 
     Its list renders only the rows in view, so each pass scrolls the filtered list from
     the top to its end. The result counts only once two passes in a row agree, and an
-    empty result only when Studio shows that there are no playlists to list. Otherwise
-    it raises StepFailed."""
+    empty result only when Studio shows "No playlists available". Otherwise it raises
+    StepFailed."""
     picker.locator("input#search-input").fill(name)
     previous = None
     for _ in range(_PASSES):
@@ -198,7 +196,8 @@ def show_row(page, picker, name: str) -> None:
 
 
 _TICKED_JS = """(picker, name) => {
-    const label = [...picker.querySelectorAll('.label-text')].find(el => el.innerText.trim() === name);
+    const label = [...picker.querySelectorAll('.label-text')]
+        .find(el => el.getBoundingClientRect().height > 0 && el.innerText.trim() === name);
     const row = label && label.closest('label, li');
     const box = row && row.querySelector('[role="checkbox"]');
     return box ? box.getAttribute('aria-checked') === 'true' : null;
@@ -287,7 +286,7 @@ def tick(page, picker, name: str) -> None:
     if state is None:
         raise StepFailed(f"the Playlists picker shows no checkbox for '{name}'")
     if not state:
-        picker.locator(".label-text").filter(has_text=re.compile(rf"^\s*{re.escape(name)}\s*$")).first.click()
+        picker.locator(".label-text:visible").filter(has_text=re.compile(rf"^\s*{re.escape(name)}\s*$")).first.click()
         page.wait_for_timeout(300)
     if is_ticked(picker, name) is not True:
         raise StepFailed(f"could not tick '{name}' in the Playlists picker")

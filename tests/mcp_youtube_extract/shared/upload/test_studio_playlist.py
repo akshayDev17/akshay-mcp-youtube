@@ -132,24 +132,40 @@ def test_unreadable_video_says_why_without_claiming_it_is_not_the_channels(monke
 PICKER_HTML = """
 <div id="dialog">
   <input id="search-input">
-  <div id="spinner" role="progressbar" style="display:none; height:4px"></div>
-  <div id="empty" style="display:none">No results found</div>
+  <div id="empty" style="display:none"></div>
   <div id="list" style="height:120px; overflow-y:auto; position:relative">
     <div id="spacer" style="position:relative"></div>
   </div>
+  <button>New playlist</button><button>Done</button>
 </div>
 <script>
-function start({playlists, loadMs, filterMs, ignoreSearch, keepScroll, blankMs, spinnerWhileBlank, emptyText}) {
+function start({playlists, loadMs, filterMs, ignoreSearch, keepScroll, blankMs, emptyText}) {
   const ROW = 30, list = document.getElementById('list'), spacer = document.getElementById('spacer');
-  const spinner = document.getElementById('spinner'), empty = document.getElementById('empty');
+  const empty = document.getElementById('empty'), input = document.getElementById('search-input');
   const checked = new Set();
-  let shown = [], range = '';
+  let shown = [], stale = [], range = '';
   window.checkedNames = () => [...checked].map(i => playlists[i]);
-  function show(indices, loading, blank) {
+  function row(index, top) {
+    const ve = document.createElement('ytcp-ve');
+    ve.innerHTML = '<label><div role="checkbox"></div><span class="label-text"></span></label>';
+    const label = ve.querySelector('label');
+    if (top === null) {
+      ve.style.display = 'none';
+    } else {
+      label.style.cssText = `position:absolute; top:${top}px; height:${ROW}px; display:block`;
+    }
+    ve.querySelector('.label-text').textContent = playlists[index];
+    ve.querySelector('[role=checkbox]').setAttribute('aria-checked', String(checked.has(index)));
+    ve.querySelector('.label-text').onclick = () => {
+      checked.has(index) ? checked.delete(index) : checked.add(index);
+      render(true);
+    };
+    return ve;
+  }
+  function show(indices, blank) {
     shown = indices;
-    spinner.style.display = loading ? 'block' : 'none';
     empty.textContent = emptyText;
-    empty.style.display = !loading && !blank && !indices.length && emptyText ? 'block' : 'none';
+    empty.style.display = !blank && !indices.length && emptyText ? 'block' : 'none';
     render(true);
   }
   function render(force) {
@@ -158,28 +174,26 @@ function start({playlists, loadMs, filterMs, ignoreSearch, keepScroll, blankMs, 
     if (!force && range === `${first}-${last}`) return;
     range = `${first}-${last}`;
     spacer.innerHTML = '';
-    shown.slice(first, last).forEach((index, i) => {
-      const row = document.createElement('label');
-      row.style.cssText = `position:absolute; top:${(first + i) * ROW}px; height:${ROW}px; display:block`;
-      row.innerHTML = '<div role="checkbox"></div><span class="label-text"></span>';
-      row.querySelector('.label-text').textContent = playlists[index];
-      row.querySelector('[role=checkbox]').setAttribute('aria-checked', String(checked.has(index)));
-      row.querySelector('.label-text').onclick = () => {
-        checked.has(index) ? checked.delete(index) : checked.add(index);
-        render(true);
-      };
-      spacer.appendChild(row);
-    });
+    stale.forEach(index => spacer.appendChild(row(index, null)));
+    shown.slice(first, last).forEach((index, i) => spacer.appendChild(row(index, (first + i) * ROW)));
   }
+  function filtered() {
+    const query = input.value.toLowerCase();
+    if (ignoreSearch) return shown;
+    return playlists.map((_, i) => i).filter(i => playlists[i].toLowerCase().includes(query));
+  }
+  function apply() {
+    stale = shown.slice(0, 15);
+    const rows = filtered();
+    if (!keepScroll) list.scrollTop = 0;
+    show(rows, false);
+  }
+  window.addPlaylist = (name) => { playlists.push(name); show(filtered(), false); };
   list.addEventListener('scroll', () => render(false));
-  document.getElementById('search-input').addEventListener('input', (event) => {
-    const query = event.target.value.toLowerCase();
-    const filtered = () => ignoreSearch ? shown
-        : playlists.map((_, i) => i).filter(i => playlists[i].toLowerCase().includes(query));
-    const apply = () => { const rows = filtered(); if (!keepScroll) list.scrollTop = 0; show(rows, false); };
+  input.addEventListener('input', () => {
     setTimeout(() => {
       if (!blankMs) return apply();
-      show([], spinnerWhileBlank, true);
+      show([], true);
       setTimeout(apply, blankMs);
     }, filterMs);
   });
@@ -210,14 +224,13 @@ def open_picker_page(browser, monkeypatch):
     pages = []
 
     def opener(playlists, load_ms=200, filter_ms=200, ignore_search=False, keep_scroll=False,
-               blank_ms=0, spinner_while_blank=False, empty_text="No results found"):
+               blank_ms=0, empty_text="No playlists available"):
         page = browser.new_page()
         pages.append(page)
         page.set_content(PICKER_HTML)
         page.evaluate("(config) => start(config)", {
             "playlists": playlists, "loadMs": load_ms, "filterMs": filter_ms, "ignoreSearch": ignore_search,
-            "keepScroll": keep_scroll, "blankMs": blank_ms, "spinnerWhileBlank": spinner_while_blank,
-            "emptyText": empty_text,
+            "keepScroll": keep_scroll, "blankMs": blank_ms, "emptyText": empty_text,
         })
         return page, page.locator("#dialog")
 
@@ -232,6 +245,21 @@ def test_search_reads_every_match_beyond_the_rows_in_view(open_picker_page):
     assert sorted(names) == sorted(PYTHONS[:-1])
 
 
+def test_a_new_name_reads_as_empty_and_its_new_playlist_is_ticked(open_picker_page):
+    page, picker = open_picker_page(PYTHONS)
+    assert sp.search_picker(page, picker, "Linear Algebra 2026") == []
+    page.evaluate("addPlaylist('Linear Algebra 2026')")
+    sp.tick(page, picker, "Linear Algebra 2026")
+    assert page.evaluate("checkedNames()") == ["Linear Algebra 2026"]
+
+
+def test_a_single_existing_match_is_read_once_and_ticked(open_picker_page):
+    page, picker = open_picker_page(["k8s"] + [f"Course {n}" for n in range(14)])
+    assert sp.search_picker(page, picker, "k8s") == ["k8s"]
+    sp.tick(page, picker, "k8s")
+    assert page.evaluate("checkedNames()") == ["k8s"]
+
+
 def test_slow_filter_that_keeps_the_scroll_offset_still_reads_from_the_top(open_picker_page):
     newest_first = [f"Python {n}" for n in range(6, 0, -1)] + [f"Other {n}" for n in range(12)] + ["Python"]
     page, picker = open_picker_page(newest_first, filter_ms=1500, keep_scroll=True)
@@ -239,9 +267,8 @@ def test_slow_filter_that_keeps_the_scroll_offset_still_reads_from_the_top(open_
     assert sorted(names) == sorted([f"Python {n}" for n in range(1, 7)] + ["Python"])
 
 
-@pytest.mark.parametrize("spinner_while_blank", [True, False])
-def test_a_list_that_blanks_while_it_filters_is_not_read_as_empty(open_picker_page, spinner_while_blank):
-    page, picker = open_picker_page(PYTHONS, blank_ms=1200, spinner_while_blank=spinner_while_blank)
+def test_a_list_that_blanks_while_it_filters_is_not_read_as_empty(open_picker_page):
+    page, picker = open_picker_page(PYTHONS, blank_ms=1200)
     names = sp.search_picker(page, picker, "Python")
     assert "Python" in names and len(names) == 31
 
@@ -259,7 +286,7 @@ def test_tick_refuses_two_playlists_with_the_same_name(open_picker_page):
     assert page.evaluate("checkedNames()") == []
 
 
-def test_an_empty_list_counts_only_when_studio_says_there_are_no_results(open_picker_page):
+def test_an_empty_list_counts_only_when_studio_says_no_playlists_available(open_picker_page):
     page, picker = open_picker_page(["Other"])
     assert sp.search_picker(page, picker, "Python") == []
     page, picker = open_picker_page([])
