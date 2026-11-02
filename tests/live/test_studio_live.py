@@ -1,6 +1,7 @@
 """Live tests against YouTube Studio. They need a signed-in channel profile and the
 YT_UPLOAD_* environment, and run only with YT_UPLOAD_LIVE_TESTS=1. Uploads are private
-(unlisted where visibility itself is under test); each prints the video id to delete."""
+(unlisted where visibility itself is under test); each prints the video id to delete.
+The edit test changes an existing private test video named by YT_UPLOAD_LIVE_EDIT_VIDEO_ID."""
 
 import os
 
@@ -108,3 +109,32 @@ def test_live_readback_of_full_fields_video(tmp_path):
                 "title is 'live test full fields', expected 'wrong'"]
         finally:
             context.close()
+
+
+@pytest.mark.skipif(not os.environ.get("YT_UPLOAD_LIVE_EDIT_VIDEO_ID"),
+                    reason="needs YT_UPLOAD_LIVE_EDIT_VIDEO_ID: a private test video whose details may be changed")
+def test_live_edit_every_field(tmp_path):
+    """Edits a private test video's title, description, thumbnail and captions, then checks
+    the read-back reported every field as applied."""
+    from datetime import datetime
+
+    from mcp_youtube_extract.shared.upload.edit import build_edit_spec
+    from mcp_youtube_extract.shared.upload.studio import StudioBackend
+
+    cfg = load_config()
+    stamp = datetime.now().strftime("%H%M%S")
+    srt = tmp_path / "captions.srt"
+    srt.write_text(f"1\n00:00:00,500 --> 00:00:02,500\nEdited captions {stamp}.\n")
+    result = build_edit_spec({
+        "video_id": os.environ["YT_UPLOAD_LIVE_EDIT_VIDEO_ID"],
+        "title": f"live test edited {stamp}",
+        "description": f"Edited description {stamp}.\n\nSecond paragraph.",
+        "thumbnail_path": str(make_thumbnail(tmp_path)),
+        "captions_path": str(srt),
+        "captions_language": "en",
+    }, cfg)
+    assert result.spec is not None, result.problems
+    outcome = StudioBackend(cfg).edit(result.spec)
+    print(f"\nLIVE EDIT {outcome.status}: {outcome.applied} {outcome.problems} {outcome.evidence}")
+    assert outcome.status == "done", outcome.problems
+    assert set(outcome.applied) == {"title", "description", "thumbnail", "captions"}

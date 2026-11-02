@@ -1,4 +1,4 @@
-"""The job runner: one worker thread, one upload at a time across all channels and jobs.
+"""The job runner: one worker thread, one upload or edit at a time across all channels and jobs.
 
 Within a job, entries run in order. An entry that fails is recorded and skipped; the
 rest carry on. Between two consecutive upload attempts in a job the worker pauses a
@@ -15,8 +15,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from ..logger import get_logger
-from .backend import Backend, failure_outcome
+from .backend import Backend, UploadOutcome, failure_outcome
 from .config import UploadConfig
+from .edit import build_edit_spec
 from .jobs import Job, JobStore
 from .spec import UploadSpec, build_spec, check_publish_at
 
@@ -138,6 +139,8 @@ class JobRunner:
 
     def _run_entry(self, job: Job, entry, attempted: bool) -> bool:
         """Returns True if the backend upload was attempted."""
+        if job.kind == "edit":
+            return self._run_edit(job, entry)
         result = build_spec(entry.params, job.defaults, self.config, self.now())
         if result.spec is None:
             entry.state, entry.problems, entry.warnings = "failed", result.problems, result.warnings
@@ -152,14 +155,45 @@ class JobRunner:
             self._save(job)
             self.pause(gap)
 
+        job.state, job.pause_until = "running", None
+        self._save(job)
+        with self._upload_lock(job):
+            return self._session_and_upload(job, entry, spec, self._on_state(job))
+
+    def _on_state(self, job: Job) -> Callable[[str, str | None], None]:
         def on_state(state: str, message: str | None) -> None:
             job.state, job.message, job.pause_until = state, message, None
             self._save(job)
 
-        job.state, job.pause_until = "running", None
-        self._save(job)
+        return on_state
+
+    def _run_edit(self, job: Job, entry) -> bool:
+        """Edit an existing video. Validated again here, since its files may have changed
+        since the call; returns True if the backend edit was attempted."""
+        result = build_edit_spec(entry.params, self.config)
+        if result.spec is None:
+            entry.state, entry.problems = "failed", result.problems
+            return False
+        spec = result.spec
         with self._upload_lock(job):
-            return self._session_and_upload(job, entry, spec, on_state)
+            reason = self.backend.ensure_session(spec.channel, self._on_state(job))
+            if reason:
+                entry.state, entry.problems = "failed", [reason]
+                return False
+            job.state, job.message = "running", None
+            entry.state = "editing"
+            self._save(job)
+            try:
+                outcome = self.backend.edit(spec)
+            except Exception as error:
+                logger.error(f"edit of {spec.video_id} in job {job.job_id} raised", exc_info=True)
+                outcome = UploadOutcome(
+                    status="needs_attention",
+                    video_id=spec.video_id,
+                    problems=[f"internal error: {error}; some fields may have changed, check the video in Studio"],
+                )
+        entry.apply(outcome)
+        return True
 
     def _upload_lock(self, job: Job):
         """An exclusive lock shared by every server process using this home, so uploads

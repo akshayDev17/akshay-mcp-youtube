@@ -304,8 +304,9 @@ To use this MCP server with a client, add the following configuration to your cl
 
 Three tools upload videos to channels you own: `upload_yt_video` (one video),
 `upload_yt_series` (a batch, as a background job) and `get_yt_upload_status` (follow a
-job). They drive YouTube Studio's own upload dialog in a dedicated Brave profile per
-channel, logged in once. This is a bridge until the Google Cloud project passes YouTube's
+job). A fourth, `edit_yt_video`, changes an existing video (see
+[Editing a video](#editing-a-video)). They drive YouTube Studio in a dedicated Brave
+profile per channel, logged in once. This is a bridge until the Google Cloud project passes YouTube's
 API audit; automating Studio is outside YouTube's terms, so the channel carries that risk
 until an official Data API backend replaces it.
 
@@ -359,11 +360,38 @@ apply — never re-uploaded) or `failed` (nothing was created). Re-uploading the
 to the same channel within 24 hours is refused. If the server stops mid-job, the job is
 marked `interrupted`; `upload_yt_series(resume_job_id=…)` finishes it.
 
+### Editing a video
+
+`edit_yt_video` changes an existing video on a configured channel, by `video_id`. One
+call can change any combination of:
+
+| Field | Parameter | Notes |
+|---|---|---|
+| Title | `title` | at most 100 characters, no `<` or `>` |
+| Description | `description` | at most 5000 characters, no `<` or `>`; `""` clears it |
+| Thumbnail | `thumbnail_path` | absolute path to a real PNG or JPEG, at most 2 MB |
+| Captions | `captions_path` + `captions_language` | absolute path to an `.srt` or `.vtt` file with timed cues; the language must be the video's own (e.g. `en`) |
+
+Fields you leave out stay untouched. Every input is checked before Studio opens, and
+nothing changes if any of them is invalid. The edit runs as a job in the same queue as
+uploads, using the same browser profile and sign-in. Title, description and thumbnail
+are saved together on the video's Details page. Captions are uploaded from its Languages
+page ("Upload manual", with timing) and published. Afterwards every changed field is read back
+from Studio and reported as applied or not. The result is `done` (all applied),
+`needs_attention` (something did not apply, or could not be confirmed after saving) or
+`failed` (nothing on the video changed).
+
+The video file itself cannot be replaced: YouTube does not allow swapping an uploaded
+video's media in place, and `edit_yt_video` never re-uploads or deletes a video.
+Visibility, schedule and playlists are not edited by this tool.
+
 ### Live tests
 
 `tests/live/` uploads real private (or unlisted) test videos and prints each id to delete
 in Studio. They run only with `YT_UPLOAD_LIVE_TESTS=1` and the `YT_UPLOAD_*` variables set.
-YouTube caps daily uploads on channels without the one-time upload verification.
+YouTube caps daily uploads on channels without the one-time upload verification. The edit
+test also needs `YT_UPLOAD_LIVE_EDIT_VIDEO_ID`, a private test video whose title,
+description, thumbnail and captions it may overwrite.
 
 ## Development
 

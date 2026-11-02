@@ -23,6 +23,7 @@ from .tools.video_search import tool as _video_search_tool  # noqa: F401
 from .tools.video_upload import tool as _video_upload_tool  # noqa: F401
 from .tools.series_upload import tool as _series_upload_tool  # noqa: F401
 from .tools.upload_status import tool as _upload_status_tool  # noqa: F401
+from .tools.video_edit import tool as _video_edit_tool  # noqa: F401
 
 logger = get_logger(__name__)
 

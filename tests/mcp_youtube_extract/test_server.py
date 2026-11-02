@@ -10,7 +10,7 @@ from mcp_youtube_extract._app import app
 
 def test_tools_registered():
     names = {t.name for t in asyncio.run(app.list_tools())}
-    assert {"upload_yt_video", "upload_yt_series", "get_yt_upload_status"} <= names
+    assert {"upload_yt_video", "upload_yt_series", "get_yt_upload_status", "edit_yt_video"} <= names
 
 
 def test_login_flag_dispatches(monkeypatch):
@@ -23,6 +23,10 @@ def test_login_flag_dispatches(monkeypatch):
 
 def test_instructions_mention_uploads():
     assert "upload" in app.instructions.lower() and "public by default" in app.instructions.lower()
+
+
+def test_instructions_mention_edits():
+    assert "edit_yt_video" in app.instructions and "cannot be replaced" in app.instructions
 
 
 def test_cli_login_reports_config_error(monkeypatch, capsys, tmp_path):

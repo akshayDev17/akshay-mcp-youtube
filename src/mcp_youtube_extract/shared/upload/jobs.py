@@ -1,4 +1,4 @@
-"""Upload jobs: one or more entries, persisted as JSON so status survives a restart."""
+"""Upload and edit jobs: one or more entries, persisted as JSON so status survives a restart."""
 
 import json
 import os
@@ -14,7 +14,7 @@ from .procs import pid_alive
 
 logger = get_logger(__name__)
 
-EntryState = Literal["waiting", "uploading", "done", "needs_attention", "failed", "interrupted"]
+EntryState = Literal["waiting", "uploading", "editing", "done", "needs_attention", "failed", "interrupted"]
 JobState = Literal["queued", "running", "waiting_for_sign_in", "pausing", "finished", "interrupted"]
 
 _UNFINISHED_JOB = ("queued", "running", "waiting_for_sign_in", "pausing")
@@ -50,7 +50,7 @@ class Entry:
 @dataclass
 class Job:
     job_id: str
-    kind: Literal["video", "series"]
+    kind: Literal["video", "series", "edit"]
     created_at: datetime
     state: JobState
     entries: list[Entry]
@@ -132,7 +132,7 @@ class JobStore:
             if job.owner_pid is not None and pid_alive(job.owner_pid):
                 continue  # another server process is still running it
             for entry in job.entries:
-                if entry.state in ("waiting", "uploading"):
+                if entry.state in ("waiting", "uploading", "editing"):
                     entry.state = "interrupted"
             job.state = "interrupted"
             job.message = "the server stopped before this job finished; resume it with resume_job_id"
@@ -146,6 +146,8 @@ def _local(moment: datetime) -> str:
 
 
 def _entry_label(entry: Entry) -> str:
+    if "video_id" in entry.params:
+        return f"video {entry.params['video_id']}"
     source = entry.params.get("folder") or entry.params.get("video_path") or "?"
     return Path(str(source)).name or str(source)
 
@@ -171,7 +173,8 @@ def format_status(job: Job, now: datetime) -> str:
     state = job.state.replace("_", " ")
     if job.state == "pausing" and job.pause_until:
         state = f"pausing until {_local(job.pause_until)} before the next upload"
-    lines = [f"Upload job {job.job_id} ({job.kind}): {state}"]
+    header = f"Edit job {job.job_id}" if job.kind == "edit" else f"Upload job {job.job_id} ({job.kind})"
+    lines = [f"{header}: {state}"]
     if job.message:
         lines.append(job.message)
     counts: dict[str, int] = {}

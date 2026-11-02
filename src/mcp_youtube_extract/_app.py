@@ -11,7 +11,9 @@ app = MCPServer(
         "Upload videos to the owner's configured channels with upload_yt_video or "
         "upload_yt_series: uploads are public by default (use visibility or "
         "publish_at to change that), run one at a time as server-side jobs, and "
-        "report a job id to follow with get_yt_upload_status. If a channel needs "
+        "report a job id to follow with get_yt_upload_status. Edit an existing "
+        "video's title, description, thumbnail or captions with edit_yt_video (the "
+        "video file itself cannot be replaced). If a channel needs "
         "signing in, a browser window opens on the owner's machine; tell the person "
         "to sign in there, then keep checking the job's status."
     ),

@@ -1,22 +1,26 @@
-"""What an upload backend promises: a session per channel, and one upload at a time.
+"""What an upload backend promises: a session per channel, and one upload or edit at a time.
 
 The Studio browser backend implements this now; a YouTube Data API backend can
 implement the same protocol once the API project passes its audit.
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Literal, Protocol
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 from .config import Channel
 from .spec import UploadSpec
+
+if TYPE_CHECKING:
+    from .edit import EditSpec
 
 OutcomeStatus = Literal["done", "needs_attention", "failed"]
 
 
 @dataclass
 class UploadOutcome:
-    """done: uploaded as asked. needs_attention: the video exists on the channel but
-    something did not apply. failed: nothing was created on the channel."""
+    """done: uploaded (or edited) as asked. needs_attention: the video exists on the
+    channel but something did not apply. failed: nothing was created (or, for an edit,
+    nothing on the video was changed)."""
 
     status: OutcomeStatus
     video_id: str | None = None
@@ -42,3 +46,6 @@ class Backend(Protocol):
 
     def upload(self, spec: UploadSpec, on_video_id: Callable[[str], None] | None = None) -> UploadOutcome:
         """on_video_id is called as soon as the platform has created the video."""
+
+    def edit(self, spec: "EditSpec") -> UploadOutcome:
+        """Change only the fields the spec names on an existing video, then read them back."""
